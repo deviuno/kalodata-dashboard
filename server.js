@@ -294,7 +294,10 @@ const swaggerSpec = swaggerJsdoc({
       description: 'API completa para o dashboard Kalodata TikTok Shop BR. Proxy autenticado para a API do Kalodata com monitoramento de sessao e alertas por email.',
       contact: { name: 'Kalodata Dashboard' },
     },
-    servers: [{ url: `http://localhost:${PORT}`, description: 'Servidor local' }],
+    servers: [
+      { url: `http://localhost:${PORT}`, description: 'Localhost' },
+      { url: `http://0.0.0.0:${PORT}`, description: 'Rede local' },
+    ],
     tags: [
       { name: 'Products', description: 'Produtos do TikTok Shop' },
       { name: 'Videos', description: 'Videos de vendas e trending' },
@@ -997,7 +1000,7 @@ app.use('/api/kalo', (req, res) => {
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Kalodata API running on http://localhost:${PORT}`)
   console.log(`Swagger docs: http://localhost:${PORT}/api/docs`)
   console.log(`Cookies loaded: ${getCookies() ? 'YES' : 'NO'}`)
