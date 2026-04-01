@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   ShoppingBag, Video, Users, TrendingUp, RefreshCw,
   Clock, ChevronLeft, ChevronRight, AlertTriangle, Wifi, WifiOff,
+  Settings, X, Check, Loader,
 } from 'lucide-react'
 import ProductCard from './components/ProductCard'
 import VideoCard from './components/VideoCard'
@@ -29,6 +30,11 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sessionOk, setSessionOk] = useState<boolean | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [kalodataCookies, setKalodataCookies] = useState('')
+  const [kalowaveCookies, setKalowaveCookies] = useState('')
+  const [savingCookies, setSavingCookies] = useState(false)
+  const [cookieSaveMsg, setCookieSaveMsg] = useState<string | null>(null)
 
   // Check session on mount
   useEffect(() => {
@@ -113,8 +119,97 @@ export default function App() {
           <button className="btn-refresh" onClick={load} disabled={loading}>
             <RefreshCw size={15} className={loading ? 'spin' : ''} />
           </button>
+          <button className="btn-refresh" onClick={() => setShowSettings(true)} title="Configuracoes">
+            <Settings size={15} />
+          </button>
         </div>
       </header>
+
+      {/* SETTINGS MODAL */}
+      {showSettings && (
+        <div className="video-modal-overlay" onClick={() => setShowSettings(false)}>
+          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="video-modal-header">
+              <span style={{ fontWeight: 600, fontSize: 14 }}>Cookies</span>
+              <button className="video-modal-close" onClick={() => setShowSettings(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="settings-body">
+              <div className="settings-field">
+                <label className="settings-label">Kalodata Cookies</label>
+                <p className="settings-hint">Copie do DevTools (F12) ou da extensao</p>
+                <textarea
+                  className="settings-textarea"
+                  placeholder="cole os cookies do kalodata.com aqui..."
+                  value={kalodataCookies}
+                  onChange={(e) => setKalodataCookies(e.target.value)}
+                  rows={3}
+                />
+              </div>
+              <div className="settings-field">
+                <label className="settings-label">Kalowave Cookies</label>
+                <p className="settings-hint">Copie do DevTools ou da extensao (clip.kalowave.com)</p>
+                <textarea
+                  className="settings-textarea"
+                  placeholder="cole os cookies do kalowave aqui..."
+                  value={kalowaveCookies}
+                  onChange={(e) => setKalowaveCookies(e.target.value)}
+                  rows={3}
+                />
+              </div>
+              {cookieSaveMsg && (
+                <div className={`settings-msg ${cookieSaveMsg.includes('Erro') ? 'error' : ''}`}>
+                  {cookieSaveMsg}
+                </div>
+              )}
+              <button
+                className="settings-save"
+                disabled={savingCookies || (!kalodataCookies.trim() && !kalowaveCookies.trim())}
+                onClick={async () => {
+                  setSavingCookies(true)
+                  setCookieSaveMsg(null)
+                  try {
+                    const results: string[] = []
+
+                    if (kalodataCookies.trim()) {
+                      const res = await fetch('/api/cookies', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cookies: kalodataCookies.trim() }),
+                      })
+                      const json = await res.json()
+                      results.push(json.sessionValid ? 'Kalodata: sessao valida' : 'Kalodata: salvo (sessao invalida)')
+                    }
+
+                    if (kalowaveCookies.trim()) {
+                      const res = await fetch('/api/config', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ kalowave_cookies: kalowaveCookies.trim() }),
+                      })
+                      const json = await res.json()
+                      results.push(json.success ? 'Kalowave: salvo' : 'Kalowave: erro')
+                    }
+
+                    setCookieSaveMsg(results.join(' | '))
+                    setKalodataCookies('')
+                    setKalowaveCookies('')
+                    checkSession().then(setSessionOk)
+                  } catch {
+                    setCookieSaveMsg('Erro ao salvar')
+                  } finally {
+                    setSavingCookies(false)
+                  }
+                }}
+              >
+                {savingCookies ? <Loader size={14} className="spin" /> : <Check size={14} />}
+                Salvar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TABS */}
       <nav className="tabs">
