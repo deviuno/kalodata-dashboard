@@ -25,5 +25,6 @@ dist-ssr
 
 # Kalodata
 cookies.txt
+config.json
 public/data/*.json
 .env

@@ -1,0 +1,6 @@
+{
+  "resend_api_key": "re_xxxx_xxxxxxxxxxxxxxxxxxxxxxx",
+  "email_from": "Kalodata Dashboard <onboarding@resend.dev>",
+  "email_to": "seu-email@gmail.com",
+  "cookie_check_cron": "0 */6 * * *"
+}

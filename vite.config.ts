@@ -7,7 +7,7 @@ export default defineConfig({
     host: true,
     port: 5174,
     proxy: {
-      '/api/kalo': {
+      '/api': {
         target: 'http://localhost:3456',
         changeOrigin: true,
       }
