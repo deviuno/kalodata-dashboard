@@ -982,6 +982,137 @@ app.post('/api/insight/:videoId/transcript', (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
+// Creator Avatar (TikTok profile scrape)
+// ---------------------------------------------------------------------------
+const tiktokProfileCache = new Map()
+
+app.get('/api/creator/:handle/avatar', (req, res) => {
+  const { handle } = req.params
+  if (!handle || !/^[\w.]+$/.test(handle)) {
+    return res.status(400).json({ success: false, message: 'Invalid handle' })
+  }
+
+  if (tiktokProfileCache.has(handle)) {
+    return res.json({ success: true, data: tiktokProfileCache.get(handle) })
+  }
+
+  try {
+    const args = [
+      '-s', '--max-time', '10', '-L',
+      '-A', UA,
+      `https://www.tiktok.com/@${handle}`,
+    ]
+    const html = execFileSync('curl', args, { encoding: 'utf-8', timeout: 15000 })
+
+    const data = {}
+
+    // Extract avatar
+    const avatarMatch = html.match(/"avatarLarger":"([^"]+)"/)
+      || html.match(/"avatarMedium":"([^"]+)"/)
+      || html.match(/"avatarThumb":"([^"]+)"/)
+    if (avatarMatch) {
+      data.url = avatarMatch[1].replace(/\\u002F/g, '/')
+    }
+
+    // Extract bio link
+    const bioLinkMatch = html.match(/"bioLink":\{[^}]*"link":"([^"]+)"/)
+    if (bioLinkMatch) {
+      data.bioLink = bioLinkMatch[1].replace(/\\u002F/g, '/')
+    }
+
+    // Extract follower/following/likes counts
+    const followingMatch = html.match(/"followingCount":(\d+)/)
+    const followerMatch = html.match(/"followerCount":(\d+)/)
+    const heartMatch = html.match(/"heartCount":(\d+)/)
+    const videoMatch = html.match(/"videoCount":(\d+)/)
+    if (followingMatch) data.followingCount = parseInt(followingMatch[1])
+    if (followerMatch) data.followerCount = parseInt(followerMatch[1])
+    if (heartMatch) data.heartCount = parseInt(heartMatch[1])
+    if (videoMatch) data.videoCount = parseInt(videoMatch[1])
+
+    if (data.url || data.bioLink) {
+      tiktokProfileCache.set(handle, data)
+      setTimeout(() => tiktokProfileCache.delete(handle), 3600000)
+      return res.json({ success: true, data })
+    }
+
+    res.json({ success: false, message: 'Profile data not found' })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Creator Search (TikTok handle -> ID + profile)
+// ---------------------------------------------------------------------------
+app.get('/api/creator/search/:handle', (req, res) => {
+  const { handle } = req.params
+  if (!handle || !/^[\w.]+$/.test(handle)) {
+    return res.status(400).json({ success: false, message: 'Invalid handle' })
+  }
+
+  // Check cache first (avatar endpoint caches profile data)
+  if (tiktokProfileCache.has(handle) && tiktokProfileCache.get(handle).userId) {
+    return res.json({ success: true, data: tiktokProfileCache.get(handle) })
+  }
+
+  try {
+    const args = [
+      '-s', '--max-time', '10', '-L',
+      '-A', UA,
+      `https://www.tiktok.com/@${handle}`,
+    ]
+    const html = execFileSync('curl', args, { encoding: 'utf-8', timeout: 15000 })
+
+    const data = {}
+
+    // Extract user ID
+    const idMatch = html.match(/"id":"(\d+)"/)
+    if (idMatch) data.userId = idMatch[1]
+
+    // Extract avatar
+    const avatarMatch = html.match(/"avatarLarger":"([^"]+)"/)
+      || html.match(/"avatarMedium":"([^"]+)"/)
+      || html.match(/"avatarThumb":"([^"]+)"/)
+    if (avatarMatch) data.url = avatarMatch[1].replace(/\\u002F/g, '/')
+
+    // Extract nickname
+    const nicknameMatch = html.match(/"nickname":"([^"]+)"/)
+    if (nicknameMatch) data.nickname = nicknameMatch[1]
+
+    // Extract bio
+    const signatureMatch = html.match(/"signature":"([^"]*)"/)
+    if (signatureMatch) data.signature = signatureMatch[1].replace(/\\n/g, '\n')
+
+    // Extract bio link
+    const bioLinkMatch = html.match(/"bioLink":\{[^}]*"link":"([^"]+)"/)
+    if (bioLinkMatch) data.bioLink = bioLinkMatch[1].replace(/\\u002F/g, '/')
+
+    // Extract counts
+    const followingMatch = html.match(/"followingCount":(\d+)/)
+    const followerMatch = html.match(/"followerCount":(\d+)/)
+    const heartMatch = html.match(/"heartCount":(\d+)/)
+    const videoMatch = html.match(/"videoCount":(\d+)/)
+    if (followingMatch) data.followingCount = parseInt(followingMatch[1])
+    if (followerMatch) data.followerCount = parseInt(followerMatch[1])
+    if (heartMatch) data.heartCount = parseInt(heartMatch[1])
+    if (videoMatch) data.videoCount = parseInt(videoMatch[1])
+
+    data.handle = handle
+
+    if (data.userId) {
+      tiktokProfileCache.set(handle, data)
+      setTimeout(() => tiktokProfileCache.delete(handle), 3600000)
+      return res.json({ success: true, data })
+    }
+
+    res.json({ success: false, message: 'Creator not found on TikTok' })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Legacy proxy (mantido para compatibilidade com o frontend)
 // ---------------------------------------------------------------------------
 app.use('/api/kalo', (req, res) => {

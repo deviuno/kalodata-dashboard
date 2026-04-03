@@ -86,6 +86,90 @@ export async function fetchCreators(
   })
 }
 
+export async function fetchCreatorDetail(
+  id: string,
+  range: DateRange,
+) {
+  return post('creator/detail', {
+    id,
+    ...range,
+  })
+}
+
+export async function fetchCreatorVideos(
+  id: string,
+  range: DateRange,
+  pageNo = 1,
+  pageSize = 10,
+  sortField = 'revenue',
+) {
+  return post('creator/detail/video/queryList', {
+    id,
+    ...range,
+    pageNo,
+    pageSize,
+    sort: [{ field: sortField, type: 'DESC' }],
+  })
+}
+
+export async function fetchCreatorLives(
+  id: string,
+  range: DateRange,
+  pageNo = 1,
+  pageSize = 10,
+  sortField = 'revenue',
+) {
+  return post('creator/detail/live/queryList', {
+    id,
+    ...range,
+    pageNo,
+    pageSize,
+    sort: [{ field: sortField, type: 'DESC' }],
+  })
+}
+
+export interface TikTokProfile {
+  url?: string
+  bioLink?: string
+  followingCount?: number
+  followerCount?: number
+  heartCount?: number
+  videoCount?: number
+}
+
+export async function fetchTikTokProfile(handle: string): Promise<TikTokProfile | null> {
+  try {
+    const res = await fetch(`/api/creator/${encodeURIComponent(handle)}/avatar`)
+    const json = await res.json()
+    return json.success ? json.data : null
+  } catch {
+    return null
+  }
+}
+
+export interface CreatorSearchResult {
+  userId: string
+  handle: string
+  nickname?: string
+  signature?: string
+  url?: string
+  bioLink?: string
+  followingCount?: number
+  followerCount?: number
+  heartCount?: number
+  videoCount?: number
+}
+
+export async function searchCreatorByHandle(handle: string): Promise<CreatorSearchResult | null> {
+  try {
+    const res = await fetch(`/api/creator/search/${encodeURIComponent(handle)}`)
+    const json = await res.json()
+    return json.success ? json.data : null
+  } catch {
+    return null
+  }
+}
+
 export async function checkSession(): Promise<boolean> {
   try {
     const res = await fetch('/api/kalo/user/features', {

@@ -2,14 +2,15 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   ShoppingBag, Video, Users, TrendingUp, RefreshCw,
   Clock, ChevronLeft, ChevronRight, AlertTriangle, Wifi, WifiOff,
-  Settings, X, Check, Loader,
+  Settings, X, Check, Loader, Search,
 } from 'lucide-react'
 import ProductCard from './components/ProductCard'
 import VideoCard from './components/VideoCard'
 import CreatorCard from './components/CreatorCard'
+import CreatorDetail from './components/CreatorDetail'
 import {
   fetchProducts, fetchVideos, fetchHotVideos, fetchCreators,
-  checkSession, getDateRange, type DateRange,
+  searchCreatorByHandle, checkSession, getDateRange, type DateRange,
 } from './lib/kalodata'
 import './App.css'
 
@@ -35,6 +36,10 @@ export default function App() {
   const [kalowaveCookies, setKalowaveCookies] = useState('')
   const [savingCookies, setSavingCookies] = useState(false)
   const [cookieSaveMsg, setCookieSaveMsg] = useState<string | null>(null)
+  const [selectedCreator, setSelectedCreator] = useState<{ id: string; handle?: string; nickname?: string } | null>(null)
+  const [creatorSearch, setCreatorSearch] = useState('')
+  const [searchingCreator, setSearchingCreator] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
 
   // Check session on mount
   useEffect(() => {
@@ -82,7 +87,7 @@ export default function App() {
   useEffect(() => { load() }, [load])
 
   // Reset page when tab or days change
-  useEffect(() => { setPage(1) }, [tab, days])
+  useEffect(() => { setPage(1); setSelectedCreator(null) }, [tab, days])
 
   const tabs: { key: Tab; label: string; icon: any }[] = [
     { key: 'products', label: 'Produtos Top', icon: ShoppingBag },
@@ -93,7 +98,7 @@ export default function App() {
 
   const range = getDateRange(days)
   const showDateFilter = tab !== 'hot-videos'
-  const showPagination = data.length >= PAGE_SIZE || page > 1
+  const showPagination = (data.length >= PAGE_SIZE || page > 1) && !selectedCreator
 
   return (
     <div className="app">
@@ -226,7 +231,7 @@ export default function App() {
       </nav>
 
       {/* FILTERS */}
-      <div className="filters-bar">
+      {!selectedCreator && <div className="filters-bar">
         {showDateFilter && (
           <div className="date-filter">
             <Clock size={14} />
@@ -249,7 +254,7 @@ export default function App() {
             <span className="filter-range">Trending agora</span>
           )}
         </div>
-      </div>
+      </div>}
 
       {/* CONTENT */}
       <main className="main">
@@ -293,12 +298,61 @@ export default function App() {
               </div>
             )}
 
-            {tab === 'creators' && (
-              <div className="grid creators-grid">
-                {data.map((c, i) => (
-                  <CreatorCard key={c.id || i} creator={c} rank={(page - 1) * 10 + i + 1} />
-                ))}
-              </div>
+            {tab === 'creators' && !selectedCreator && (
+              <>
+                <div className="creator-search-bar">
+                  <Search size={15} className="creator-search-icon" />
+                  <input
+                    className="creator-search-input"
+                    type="text"
+                    placeholder="Buscar criador do TikTok por handle (ex: lealrecomenda)"
+                    value={creatorSearch}
+                    onChange={e => { setCreatorSearch(e.target.value); setSearchError(null) }}
+                    onKeyDown={async e => {
+                      if (e.key === 'Enter' && creatorSearch.trim()) {
+                        const handle = creatorSearch.trim().replace(/^@/, '')
+                        setSearchingCreator(true)
+                        setSearchError(null)
+                        try {
+                          const result = await searchCreatorByHandle(handle)
+                          if (result?.userId) {
+                            setSelectedCreator({ id: result.userId, handle: result.handle, nickname: result.nickname })
+                            setCreatorSearch('')
+                          } else {
+                            setSearchError(`Criador @${handle} nao encontrado no TikTok`)
+                          }
+                        } catch {
+                          setSearchError('Erro ao buscar criador')
+                        } finally {
+                          setSearchingCreator(false)
+                        }
+                      }
+                    }}
+                    disabled={searchingCreator}
+                  />
+                  {searchingCreator && <Loader size={15} className="spin creator-search-loader" />}
+                  {searchError && <span className="creator-search-error">{searchError}</span>}
+                </div>
+                <div className="grid creators-grid">
+                  {data.map((c, i) => (
+                    <CreatorCard
+                      key={c.id || i}
+                      creator={c}
+                      rank={(page - 1) * 10 + i + 1}
+                      onSelect={(id) => setSelectedCreator({ id, handle: c.handle, nickname: c.nickname })}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+
+            {tab === 'creators' && selectedCreator && (
+              <CreatorDetail
+                creatorId={selectedCreator.id}
+                creatorHandle={selectedCreator.handle}
+                creatorNickname={selectedCreator.nickname}
+                onBack={() => setSelectedCreator(null)}
+              />
             )}
 
             {data.length === 0 && !loading && (
