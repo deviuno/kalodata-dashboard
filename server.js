@@ -79,6 +79,9 @@ function kaloPost(path, body) {
   ]
 
   const result = execFileSync('curl', args, { encoding: 'utf-8', timeout: 35000 })
+  if (result.trimStart().startsWith('<')) {
+    throw new Error('Cloudflare challenge — atualize os cookies (precisa do cf_clearance)')
+  }
   return JSON.parse(result)
 }
 
@@ -90,15 +93,26 @@ function kaloGet(path) {
     '-s', '--max-time', '30',
     '-A', UA,
     '-b', cookies,
+    '-H', 'accept: application/json, text/plain, */*',
     '-H', 'country: BR',
     '-H', 'currency: BRL',
     '-H', 'language: pt-BR',
     '-H', 'origin: https://www.kalodata.com',
     '-H', 'referer: https://www.kalodata.com/creator/detail',
+    '-H', 'sec-ch-ua: "Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+    '-H', 'sec-ch-ua-mobile: ?0',
+    '-H', 'sec-ch-ua-platform: "Linux"',
+    '-H', 'sec-fetch-dest: empty',
+    '-H', 'sec-fetch-mode: cors',
+    '-H', 'sec-fetch-site: same-origin',
+    '-H', 'dnt: 1',
     `https://www.kalodata.com${path}`,
   ]
 
   const result = execFileSync('curl', args, { encoding: 'utf-8', timeout: 35000 })
+  if (result.trimStart().startsWith('<')) {
+    throw new Error('Cloudflare challenge — atualize os cookies (precisa do cf_clearance)')
+  }
   return JSON.parse(result)
 }
 
