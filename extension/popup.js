@@ -1,6 +1,6 @@
 const DOMAINS = {
-  kalodata: ['.kalodata.com', 'www.kalodata.com', 'kalodata.com'],
-  kalowave: ['.kalowave.com', 'clip.kalowave.com', 'www.kaloclip.com', '.kaloclip.com'],
+  kalodata: ['https://www.kalodata.com', 'https://kalodata.com'],
+  kalowave: ['https://clip.kalowave.com', 'https://www.kaloclip.com'],
 }
 
 let currentDomain = 'kalodata'
@@ -13,7 +13,7 @@ async function loadCookies(domain) {
   const allCookies = []
 
   for (const url of urls) {
-    const cookies = await chrome.cookies.getAll({ domain: url })
+    const cookies = await chrome.cookies.getAll({ url })
     for (const c of cookies) {
       if (!seen.has(c.name)) {
         seen.add(c.name)
@@ -34,7 +34,6 @@ async function loadCookies(domain) {
     return
   }
 
-  // Check for critical cookies
   const hasCfClearance = allCookies.some(c => c.name === 'cf_clearance')
   const hasSession = allCookies.some(c => c.name === 'SESSION')
 
@@ -47,18 +46,15 @@ async function loadCookies(domain) {
   copyBtn.textContent = 'Copiar Cookies'
   copyBtn.classList.remove('copied')
 
-  // Update active tab
   document.querySelectorAll('.tab').forEach(t => {
     t.classList.toggle('active', t.dataset.domain === domain)
   })
 }
 
-// Tab clicks
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => loadCookies(tab.dataset.domain))
 })
 
-// Copy button
 document.getElementById('copy').addEventListener('click', async () => {
   if (!currentCookieString) return
   await navigator.clipboard.writeText(currentCookieString)
@@ -71,5 +67,4 @@ document.getElementById('copy').addEventListener('click', async () => {
   }, 2000)
 })
 
-// Load on open
 loadCookies('kalodata')
