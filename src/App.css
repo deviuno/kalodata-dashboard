@@ -375,6 +375,14 @@
   opacity: 0;
   transition: opacity 0.2s;
 }
+.video-thumb-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+}
 .video-thumb-wrapper:hover .video-thumb-play { opacity: 1; }
 
 /* Creator detail video thumbnail */
@@ -385,12 +393,28 @@
   overflow: hidden;
   flex-shrink: 0;
   background: var(--surface2);
+  position: relative;
+}
+.cd-video-thumb-clickable {
+  cursor: pointer;
 }
 .cd-video-thumb {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
+.cd-video-thumb-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.3);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.cd-video-thumb-clickable:hover .cd-video-thumb-play { opacity: 1; }
 
 /* Product mini thumbnails in video table */
 .cd-product-thumbs {

@@ -3,7 +3,9 @@ import {
   ArrowLeft, ExternalLink, Users, Video, ShoppingBag, TrendingUp,
   RefreshCw, ChevronLeft, ChevronRight,
   Calendar, Megaphone, Clock, Heart, DollarSign, Eye, PlayCircle,
+  Play,
 } from 'lucide-react'
+import VideoPlayerModal from './VideoPlayerModal'
 import {
   fetchCreatorDetail, fetchCreatorVideos, fetchCreatorLives,
   fetchCreatorProducts, fetchCreatorTotal, fetchTikTokProfile,
@@ -40,6 +42,7 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
   const [videoSort, setVideoSort] = useState('revenue')
   const [tiktokProfile, setTiktokProfile] = useState<TikTokProfile | null>(null)
   const [totals, setTotals] = useState<CreatorTotal | null>(null)
+  const [playerVideoId, setPlayerVideoId] = useState<string | null>(null)
   const PAGE_SIZE = 10
 
   const range = getDateRange(days)
@@ -374,7 +377,10 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
                         <td className="cd-td-rank">{(videoPage - 1) * PAGE_SIZE + i + 1}</td>
                         <td className="cd-td-desc">
                           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                            <div className="cd-video-thumb-wrap">
+                            <div
+                              className="cd-video-thumb-wrap cd-video-thumb-clickable"
+                              onClick={() => setPlayerVideoId(vid)}
+                            >
                               <img
                                 src={`/api/video/${vid}/cover`}
                                 alt=""
@@ -382,6 +388,7 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
                                 onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                                 loading="lazy"
                               />
+                              <div className="cd-video-thumb-play"><Play size={14} /></div>
                             </div>
                             <div style={{ minWidth: 0 }}>
                               <span className="cd-video-title">{v.description || 'Sem titulo'}</span>
@@ -531,6 +538,16 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
             Proxima <ChevronRight size={16} />
           </button>
         </div>
+      )}
+
+      {/* VIDEO PLAYER MODAL */}
+      {playerVideoId && (
+        <VideoPlayerModal
+          videoId={playerVideoId}
+          title={`@${handle}`}
+          onClose={() => setPlayerVideoId(null)}
+          useKaloData
+        />
       )}
     </div>
   )

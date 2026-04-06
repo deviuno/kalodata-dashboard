@@ -82,6 +82,26 @@ function kaloPost(path, body) {
   return JSON.parse(result)
 }
 
+function kaloGet(path) {
+  const cookies = getCookies()
+  if (!cookies) throw new Error('cookies.txt not found or empty')
+
+  const args = [
+    '-s', '--max-time', '30',
+    '-A', UA,
+    '-b', cookies,
+    '-H', 'country: BR',
+    '-H', 'currency: BRL',
+    '-H', 'language: pt-BR',
+    '-H', 'origin: https://www.kalodata.com',
+    '-H', 'referer: https://www.kalodata.com/creator/detail',
+    `https://www.kalodata.com${path}`,
+  ]
+
+  const result = execFileSync('curl', args, { encoding: 'utf-8', timeout: 35000 })
+  return JSON.parse(result)
+}
+
 // ---------------------------------------------------------------------------
 // Kalowave (clip.kalowave.com) proxy helper
 // ---------------------------------------------------------------------------
@@ -488,6 +508,35 @@ app.get('/api/video/:id/cover', (req, res) => {
   const { id } = req.params
   if (!/^\d+$/.test(id)) return res.status(400).send('Invalid id')
   proxyKaloCDN(`tiktok.video/${id}/cover.png`, `vid_${id}`, res)
+})
+
+/**
+ * @swagger
+ * /api/video/{id}/url:
+ *   get:
+ *     summary: Obter URL do MP4 do video via KaloData
+ *     tags: [Videos]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: URL assinada do video MP4
+ *       500:
+ *         description: Erro interno
+ */
+app.get('/api/video/:id/url', (req, res) => {
+  const { id } = req.params
+  if (!/^\d+$/.test(id)) return res.status(400).json({ success: false, message: 'Invalid id' })
+  try {
+    const data = kaloGet(`/video/detail/getVideoUrl?videoId=${id}`)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
 })
 
 // ---------------------------------------------------------------------------
