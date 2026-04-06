@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   ShoppingBag, Video, Users, TrendingUp, RefreshCw,
   Clock, ChevronLeft, ChevronRight, AlertTriangle, Wifi, WifiOff,
@@ -49,6 +49,7 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<CreatorSearchItem[]>([])
   const [showSearchResults, setShowSearchResults] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null)
 
   // Check session on mount
   useEffect(() => {
@@ -316,21 +317,24 @@ export default function App() {
                     type="text"
                     placeholder="Buscar criador por nome ou handle (ex: lealrecomenda)"
                     value={creatorSearch}
-                    onChange={async e => {
+                    onChange={e => {
                       const val = e.target.value
                       setCreatorSearch(val)
                       setSearchError(null)
+                      if (debounceRef.current) clearTimeout(debounceRef.current)
                       if (val.trim().length >= 2) {
-                        setSearchingCreator(true)
-                        try {
-                          const results = await searchCreators(val.trim())
-                          setSearchResults(results)
-                          setShowSearchResults(true)
-                        } catch {
-                          setSearchError('Erro ao buscar')
-                        } finally {
-                          setSearchingCreator(false)
-                        }
+                        debounceRef.current = setTimeout(async () => {
+                          setSearchingCreator(true)
+                          try {
+                            const results = await searchCreators(val.trim())
+                            setSearchResults(results)
+                            setShowSearchResults(true)
+                          } catch {
+                            setSearchError('Erro ao buscar')
+                          } finally {
+                            setSearchingCreator(false)
+                          }
+                        }, 400)
                       } else {
                         setSearchResults([])
                         setShowSearchResults(false)
@@ -338,7 +342,6 @@ export default function App() {
                     }}
                     onFocus={() => { if (searchResults.length > 0) setShowSearchResults(true) }}
                     onBlur={() => { setTimeout(() => setShowSearchResults(false), 200) }}
-                    disabled={searchingCreator}
                   />
                   {searchingCreator && <Loader size={15} className="spin creator-search-loader" />}
                   {searchError && <span className="creator-search-error">{searchError}</span>}
