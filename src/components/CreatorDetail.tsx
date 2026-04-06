@@ -357,6 +357,7 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
                   <tr>
                     <th>#</th>
                     <th>Video</th>
+                    <th>Produtos</th>
                     <th>Receita</th>
                     <th>Vendas</th>
                     <th>Views</th>
@@ -366,34 +367,70 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
                   </tr>
                 </thead>
                 <tbody>
-                  {videos.map((v, i) => (
-                    <tr key={v.id || i}>
-                      <td className="cd-td-rank">{(videoPage - 1) * PAGE_SIZE + i + 1}</td>
-                      <td className="cd-td-desc">
-                        <span className="cd-video-title">{v.description || 'Sem titulo'}</span>
-                        {v.duration && <span className="cd-video-duration">{v.duration}</span>}
-                      </td>
-                      <td className="cd-td-revenue">{v.revenue || '-'}</td>
-                      <td className="cd-td-sales">{typeof v.sale === 'number' ? v.sale.toLocaleString('pt-BR') : v.sale || '-'}</td>
-                      <td className="cd-td-views">{v.views || '-'}</td>
-                      <td className="cd-td-gpm">
-                        {typeof v.gpm === 'number'
-                          ? `R$${v.gpm.toFixed(2)}`
-                          : v.gpm || '-'}
-                      </td>
-                      <td className="cd-td-ads">
-                        {v.ad ? (
-                          <span className="cd-ad-badge">
-                            <Megaphone size={10} />
-                            {v.ad_revenue_ratio && <span>{v.ad_revenue_ratio}</span>}
-                          </span>
-                        ) : (
-                          <span className="cd-organic-badge">Organico</span>
-                        )}
-                      </td>
-                      <td className="cd-td-date">{v.create_time ? formatDate(v.create_time) : '-'}</td>
-                    </tr>
-                  ))}
+                  {videos.map((v, i) => {
+                    const vid = v.video_id || v.id
+                    return (
+                      <tr key={vid || i}>
+                        <td className="cd-td-rank">{(videoPage - 1) * PAGE_SIZE + i + 1}</td>
+                        <td className="cd-td-desc">
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <div className="cd-video-thumb-wrap">
+                              <img
+                                src={`/api/video/${vid}/cover`}
+                                alt=""
+                                className="cd-video-thumb"
+                                onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                loading="lazy"
+                              />
+                            </div>
+                            <div style={{ minWidth: 0 }}>
+                              <span className="cd-video-title">{v.description || 'Sem titulo'}</span>
+                              {v.duration && <span className="cd-video-duration">{v.duration}</span>}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="cd-td-products">
+                          {v.product_ids && v.product_ids.length > 0 ? (
+                            <div className="cd-product-thumbs">
+                              {v.product_ids.slice(0, 3).map((pid: string) => (
+                                <img
+                                  key={pid}
+                                  src={`/api/product/${pid}/image`}
+                                  alt=""
+                                  className="cd-product-mini"
+                                  onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                  loading="lazy"
+                                  title={pid}
+                                />
+                              ))}
+                              {v.product_ids.length > 3 && (
+                                <span className="cd-product-more">+{v.product_ids.length - 3}</span>
+                              )}
+                            </div>
+                          ) : '-'}
+                        </td>
+                        <td className="cd-td-revenue">{v.revenue || '-'}</td>
+                        <td className="cd-td-sales">{typeof v.sale === 'number' ? v.sale.toLocaleString('pt-BR') : v.sale || '-'}</td>
+                        <td className="cd-td-views">{v.views || '-'}</td>
+                        <td className="cd-td-gpm">
+                          {typeof v.gpm === 'number'
+                            ? `R$${v.gpm.toFixed(2)}`
+                            : v.gpm || '-'}
+                        </td>
+                        <td className="cd-td-ads">
+                          {v.ad ? (
+                            <span className="cd-ad-badge">
+                              <Megaphone size={10} />
+                              {v.ad_revenue_ratio && <span>{v.ad_revenue_ratio}</span>}
+                            </span>
+                          ) : (
+                            <span className="cd-organic-badge">Organico</span>
+                          )}
+                        </td>
+                        <td className="cd-td-date">{v.create_time ? formatDate(v.create_time) : '-'}</td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             )}

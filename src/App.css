@@ -348,6 +348,69 @@
   object-fit: cover;
 }
 
+/* ── VIDEO THUMBNAIL ── */
+.video-thumb-wrapper {
+  width: 56px;
+  height: 72px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--surface2);
+  position: relative;
+  cursor: pointer;
+}
+.video-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.video-thumb-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.3);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.video-thumb-wrapper:hover .video-thumb-play { opacity: 1; }
+
+/* Creator detail video thumbnail */
+.cd-video-thumb-wrap {
+  width: 44px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--surface2);
+}
+.cd-video-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Product mini thumbnails in video table */
+.cd-product-thumbs {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.cd-product-mini {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--surface2);
+}
+.cd-product-more {
+  font-size: 10px;
+  color: var(--text3);
+  font-weight: 600;
+}
+
 /* ── VIDEO DESCRIPTION ── */
 .video-desc {
   font-size: 12px;

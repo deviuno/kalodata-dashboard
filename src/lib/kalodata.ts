@@ -106,9 +106,17 @@ export async function fetchCreatorVideos(
   return post('creator/detail/video/queryList', {
     id,
     ...range,
+    cateIds: [],
+    sellerId: '',
+    authority: true,
     pageNo,
     pageSize,
-    sort: [{ field: sortField, type: 'DESC' }],
+    videoType: '',
+    'video.filter.ad.view_ratio': '',
+    'video.filter.ad.revenue_ratio': '',
+    'video.filter.ad.daily_cost': '',
+    'video.filter.ad.daily_roas': '',
+    ...(sortField ? { sort: [{ field: sortField, type: 'DESC' }] } : {}),
   })
 }
 

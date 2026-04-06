@@ -162,6 +162,16 @@ export default function VideoCard({ video: v, rank, type }: Props) {
       <div className="card" style={{ animationDelay: `${rank * 0.03}s` }}>
         <div className="card-top">
           <div className={`card-rank ${rankClass(rank)}`}>{rank}</div>
+          <div className="video-thumb-wrapper" onClick={openModal}>
+            <img
+              src={`/api/video/${videoId}/cover`}
+              alt=""
+              className="video-thumb"
+              onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+              loading="lazy"
+            />
+            <div className="video-thumb-play"><Play size={16} /></div>
+          </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <span className="handle">@{v.handle}</span>
             {isHot && v.cate_id && <div className="card-category">{v.cate_id}</div>}

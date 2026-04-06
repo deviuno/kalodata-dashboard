@@ -398,9 +398,39 @@ app.get('/api/products', (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
-// Product image proxy (KaloCDN)
+// KaloCDN image proxy (products, videos, creators)
 // ---------------------------------------------------------------------------
-const productImgCache = new Map()
+const imgCache = new Map()
+
+function proxyKaloCDN(cdnPath, cacheKey, res) {
+  const cached = imgCache.get(cacheKey)
+  if (cached && Date.now() < cached.expiresAt) {
+    res.set('Content-Type', 'image/png')
+    res.set('Cache-Control', 'public, max-age=86400')
+    return res.send(cached.buffer)
+  }
+
+  try {
+    const result = execFileSync('curl', [
+      '-s', '--max-time', '15', '-L',
+      `https://img.kalocdn.com/${cdnPath}`,
+    ], { timeout: 20000 })
+
+    if (result.length < 100) return res.status(404).send('Image not found')
+
+    imgCache.set(cacheKey, { buffer: result, contentType: 'image/png', expiresAt: Date.now() + 86400000 })
+    if (imgCache.size > 1000) {
+      const oldest = imgCache.keys().next().value
+      imgCache.delete(oldest)
+    }
+
+    res.set('Content-Type', 'image/png')
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.send(result)
+  } catch {
+    res.status(502).send('Failed to fetch image')
+  }
+}
 
 /**
  * @swagger
@@ -428,39 +458,36 @@ const productImgCache = new Map()
 app.get('/api/product/:id/image', (req, res) => {
   const { id } = req.params
   if (!/^\d+$/.test(id)) return res.status(400).send('Invalid id')
+  proxyKaloCDN(`tiktok.product/${id}/cover.png`, `prod_${id}`, res)
+})
 
-  const cached = productImgCache.get(id)
-  if (cached && Date.now() < cached.expiresAt) {
-    res.set('Content-Type', cached.contentType)
-    res.set('Cache-Control', 'public, max-age=86400')
-    return res.send(cached.buffer)
-  }
-
-  try {
-    const result = execFileSync('curl', [
-      '-s', '--max-time', '15', '-L',
-      `https://img.kalocdn.com/tiktok.product/${id}/cover.png`,
-    ], { timeout: 20000 })
-
-    if (result.length < 100) {
-      return res.status(404).send('Image not found')
-    }
-
-    const contentType = 'image/png'
-    productImgCache.set(id, { buffer: result, contentType, expiresAt: Date.now() + 86400000 })
-
-    // Evict old entries if cache grows too large
-    if (productImgCache.size > 500) {
-      const oldest = productImgCache.keys().next().value
-      productImgCache.delete(oldest)
-    }
-
-    res.set('Content-Type', contentType)
-    res.set('Cache-Control', 'public, max-age=86400')
-    res.send(result)
-  } catch (e) {
-    res.status(502).send('Failed to fetch image')
-  }
+/**
+ * @swagger
+ * /api/video/{id}/cover:
+ *   get:
+ *     summary: Proxy para thumbnail do video (KaloCDN)
+ *     tags: [Videos]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Imagem PNG de capa do video
+ *         content:
+ *           image/png:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       404:
+ *         description: Thumbnail nao encontrada
+ */
+app.get('/api/video/:id/cover', (req, res) => {
+  const { id } = req.params
+  if (!/^\d+$/.test(id)) return res.status(400).send('Invalid id')
+  proxyKaloCDN(`tiktok.video/${id}/cover.png`, `vid_${id}`, res)
 })
 
 // ---------------------------------------------------------------------------
@@ -658,34 +685,7 @@ app.get('/api/creators', (req, res) => {
 app.get('/api/creator-avatar/:id', (req, res) => {
   const { id } = req.params
   if (!/^\d+$/.test(id)) return res.status(400).send('Invalid id')
-
-  const cached = productImgCache.get('avatar_' + id)
-  if (cached && Date.now() < cached.expiresAt) {
-    res.set('Content-Type', cached.contentType)
-    res.set('Cache-Control', 'public, max-age=86400')
-    return res.send(cached.buffer)
-  }
-
-  try {
-    const result = execFileSync('curl', [
-      '-s', '--max-time', '15', '-L',
-      `https://img.kalocdn.com/tiktok.creator/${id}/avatar_medium.png`,
-    ], { timeout: 20000 })
-
-    if (result.length < 100) return res.status(404).send('Image not found')
-
-    productImgCache.set('avatar_' + id, { buffer: result, contentType: 'image/png', expiresAt: Date.now() + 86400000 })
-    if (productImgCache.size > 500) {
-      const oldest = productImgCache.keys().next().value
-      productImgCache.delete(oldest)
-    }
-
-    res.set('Content-Type', 'image/png')
-    res.set('Cache-Control', 'public, max-age=86400')
-    res.send(result)
-  } catch (e) {
-    res.status(502).send('Failed to fetch image')
-  }
+  proxyKaloCDN(`tiktok.creator/${id}/avatar_medium.png`, `avatar_${id}`, res)
 })
 
 // ---------------------------------------------------------------------------
