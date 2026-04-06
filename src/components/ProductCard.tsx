@@ -1,4 +1,5 @@
-import { ExternalLink, Star } from 'lucide-react'
+import { useState } from 'react'
+import { ExternalLink, Star, Package } from 'lucide-react'
 
 function rankClass(rank: number) {
   if (rank === 1) return 'rank-1'
@@ -19,11 +20,32 @@ function Sparkline({ data }: { data: number[] }) {
   )
 }
 
+function productImageUrl(id: string) {
+  return `/api/product/${id}/image`
+}
+
 export default function ProductCard({ product: p, rank }: { product: any; rank: number }) {
+  const [imgError, setImgError] = useState(false)
+
   return (
     <div className="card" style={{ animationDelay: `${rank * 0.03}s` }}>
       <div className="card-top">
         <div className={`card-rank ${rankClass(rank)}`}>{rank}</div>
+        <div className="product-img-wrapper">
+          {!imgError && p.id ? (
+            <img
+              src={productImageUrl(p.id)}
+              alt={p.product_title}
+              className="product-img"
+              onError={() => setImgError(true)}
+              loading="lazy"
+            />
+          ) : (
+            <div className="product-img-fallback">
+              <Package size={24} />
+            </div>
+          )}
+        </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="card-title">{p.product_title}</div>
           <div className="card-category">{p.cate_id || p.pri_cate_id}</div>

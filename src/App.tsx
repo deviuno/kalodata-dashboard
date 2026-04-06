@@ -10,9 +10,16 @@ import CreatorCard from './components/CreatorCard'
 import CreatorDetail from './components/CreatorDetail'
 import {
   fetchProducts, fetchVideos, fetchHotVideos, fetchCreators,
-  searchCreatorByHandle, checkSession, getDateRange, type DateRange,
+  searchCreators, checkSession, getDateRange, type DateRange,
+  type CreatorSearchItem,
 } from './lib/kalodata'
 import './App.css'
+
+function formatGmv(v: number): string {
+  if (v >= 1_000_000) return `R$${(v / 1_000_000).toFixed(1).replace('.0', '')}m`
+  if (v >= 1_000) return `R$${(v / 1_000).toFixed(1).replace('.0', '')}k`
+  return `R$${v.toFixed(0)}`
+}
 
 type Tab = 'products' | 'hot-videos' | 'videos' | 'creators'
 
@@ -39,6 +46,8 @@ export default function App() {
   const [selectedCreator, setSelectedCreator] = useState<{ id: string; handle?: string; nickname?: string } | null>(null)
   const [creatorSearch, setCreatorSearch] = useState('')
   const [searchingCreator, setSearchingCreator] = useState(false)
+  const [searchResults, setSearchResults] = useState<CreatorSearchItem[]>([])
+  const [showSearchResults, setShowSearchResults] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
 
   // Check session on mount
@@ -305,33 +314,64 @@ export default function App() {
                   <input
                     className="creator-search-input"
                     type="text"
-                    placeholder="Buscar criador do TikTok por handle (ex: lealrecomenda)"
+                    placeholder="Buscar criador por nome ou handle (ex: lealrecomenda)"
                     value={creatorSearch}
-                    onChange={e => { setCreatorSearch(e.target.value); setSearchError(null) }}
-                    onKeyDown={async e => {
-                      if (e.key === 'Enter' && creatorSearch.trim()) {
-                        const handle = creatorSearch.trim().replace(/^@/, '')
+                    onChange={async e => {
+                      const val = e.target.value
+                      setCreatorSearch(val)
+                      setSearchError(null)
+                      if (val.trim().length >= 2) {
                         setSearchingCreator(true)
-                        setSearchError(null)
                         try {
-                          const result = await searchCreatorByHandle(handle)
-                          if (result?.userId) {
-                            setSelectedCreator({ id: result.userId, handle: result.handle, nickname: result.nickname })
-                            setCreatorSearch('')
-                          } else {
-                            setSearchError(`Criador @${handle} nao encontrado no TikTok`)
-                          }
+                          const results = await searchCreators(val.trim())
+                          setSearchResults(results)
+                          setShowSearchResults(true)
                         } catch {
-                          setSearchError('Erro ao buscar criador')
+                          setSearchError('Erro ao buscar')
                         } finally {
                           setSearchingCreator(false)
                         }
+                      } else {
+                        setSearchResults([])
+                        setShowSearchResults(false)
                       }
                     }}
+                    onFocus={() => { if (searchResults.length > 0) setShowSearchResults(true) }}
+                    onBlur={() => { setTimeout(() => setShowSearchResults(false), 200) }}
                     disabled={searchingCreator}
                   />
                   {searchingCreator && <Loader size={15} className="spin creator-search-loader" />}
                   {searchError && <span className="creator-search-error">{searchError}</span>}
+                  {showSearchResults && searchResults.length > 0 && (
+                    <div className="creator-search-dropdown">
+                      {searchResults.map(r => (
+                        <button
+                          key={r.creator_uid}
+                          className="creator-search-result"
+                          onMouseDown={() => {
+                            setSelectedCreator({ id: r.creator_uid, handle: r.creator_handle, nickname: r.creator_nickname })
+                            setCreatorSearch('')
+                            setSearchResults([])
+                            setShowSearchResults(false)
+                          }}
+                        >
+                          <img
+                            src={`/api/creator-avatar/${r.creator_uid}`}
+                            alt=""
+                            className="creator-search-result-avatar"
+                            onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                          />
+                          <div className="creator-search-result-info">
+                            <span className="creator-search-result-name">{r.creator_nickname}</span>
+                            <span className="creator-search-result-handle">@{r.creator_handle}</span>
+                          </div>
+                          <span className="creator-search-result-gmv">
+                            {r.gmv_in_30 > 0 ? formatGmv(r.gmv_in_30) : ''}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="grid creators-grid">
                   {data.map((c, i) => (

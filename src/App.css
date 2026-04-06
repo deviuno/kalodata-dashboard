@@ -187,6 +187,29 @@
 .rank-3 { background: linear-gradient(135deg, #e17055, #d63031); color: #fff; }
 .rank-default { background: var(--surface2); color: var(--text2); }
 
+/* ── PRODUCT IMAGE ── */
+.product-img-wrapper {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--surface2);
+}
+.product-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.product-img-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+}
+
 .card-top {
   display: flex;
   align-items: flex-start;
@@ -855,6 +878,7 @@
 
 /* ── CREATOR SEARCH BAR ── */
 .creator-search-bar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -895,6 +919,86 @@
   font-size: 12px;
   color: var(--red);
   font-weight: 500;
+}
+
+/* ── CREATOR SEARCH DROPDOWN ── */
+.creator-search-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  margin-top: 4px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 360px;
+  overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+}
+
+.creator-search-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+.creator-search-result:hover {
+  background: var(--surface2);
+}
+.creator-search-result + .creator-search-result {
+  border-top: 1px solid var(--border);
+}
+
+.creator-search-result-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--surface2);
+}
+
+.creator-search-result-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.creator-search-result-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.creator-search-result-handle {
+  font-size: 11px;
+  color: var(--text3);
+}
+.creator-search-result-gmv {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+  white-space: nowrap;
+}
+
+/* ── PRODUCT THUMBNAIL IN TABLE ── */
+.cd-product-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--surface2);
 }
 
 /* ── CREATOR DETAIL PAGE ── */
@@ -1083,6 +1187,13 @@
   font-size: 18px;
   font-weight: 700;
   color: var(--text);
+}
+
+.cd-stat-daily {
+  display: block;
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 2px;
 }
 
 /* Contact section */

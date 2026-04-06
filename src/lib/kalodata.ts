@@ -128,6 +128,63 @@ export async function fetchCreatorLives(
   })
 }
 
+export interface CreatorTotal {
+  revenue: string
+  sale: string
+  video_revenue: string
+  live_revenue: string
+  shop_revenue: string
+  video_views: string
+  live_views: string
+  followers: string
+  unit_price: string
+  day_revenue: string
+  day_sale: string
+  day_video_revenue: string
+  day_live_revenue: string
+  day_shop_revenue: string
+  day_video_views: string
+  day_live_views: string
+  day_followers: string
+}
+
+export async function fetchCreatorTotal(id: string, days = 7): Promise<CreatorTotal | null> {
+  try {
+    const res = await fetch(`/api/creator/${id}/total?days=${days}`)
+    const json = await res.json()
+    return json.success ? json.data : null
+  } catch {
+    return null
+  }
+}
+
+export async function fetchCreatorProducts(
+  id: string,
+  days = 7,
+  pageNo = 1,
+  pageSize = 10,
+) {
+  const res = await fetch(`/api/creator/${id}/products?days=${days}&page=${pageNo}&pageSize=${pageSize}`)
+  const json = await res.json()
+  if (!json.success) throw new Error(json.message || 'API error')
+  return json.data
+}
+
+export interface CreatorSearchItem {
+  creator_uid: string
+  creator_handle: string
+  creator_nickname: string
+  gmv_in_30: number
+  score: number
+}
+
+export async function searchCreators(keyword: string): Promise<CreatorSearchItem[]> {
+  if (!keyword.trim()) return []
+  const res = await fetch(`/api/search/creators?keyword=${encodeURIComponent(keyword)}`)
+  const json = await res.json()
+  return json.success ? json.data : []
+}
+
 export interface TikTokProfile {
   url?: string
   bioLink?: string

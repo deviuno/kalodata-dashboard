@@ -2,11 +2,12 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   ArrowLeft, ExternalLink, Users, Video, ShoppingBag, TrendingUp,
   RefreshCw, ChevronLeft, ChevronRight,
-  Calendar, Megaphone, Clock, Heart,
+  Calendar, Megaphone, Clock, Heart, DollarSign, Eye, PlayCircle,
 } from 'lucide-react'
 import {
   fetchCreatorDetail, fetchCreatorVideos, fetchCreatorLives,
-  fetchTikTokProfile, getDateRange, type TikTokProfile,
+  fetchCreatorProducts, fetchCreatorTotal, fetchTikTokProfile,
+  getDateRange, type TikTokProfile, type CreatorTotal,
 } from '../lib/kalodata'
 
 interface Props {
@@ -21,21 +22,24 @@ const DATE_OPTIONS = [
   { label: '30 dias', days: 30 },
 ]
 
-type SubTab = 'videos' | 'lives'
+type SubTab = 'videos' | 'lives' | 'products'
 
 export default function CreatorDetail({ creatorId, creatorHandle, creatorNickname, onBack }: Props) {
   const [days, setDays] = useState(7)
   const [profile, setProfile] = useState<any>(null)
   const [videos, setVideos] = useState<any[]>([])
   const [lives, setLives] = useState<any[]>([])
+  const [products, setProducts] = useState<any[]>([])
   const [, setLoadingProfile] = useState(true)
   const [loadingContent, setLoadingContent] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [subTab, setSubTab] = useState<SubTab>('videos')
   const [videoPage, setVideoPage] = useState(1)
   const [livePage, setLivePage] = useState(1)
+  const [productPage, setProductPage] = useState(1)
   const [videoSort, setVideoSort] = useState('revenue')
   const [tiktokProfile, setTiktokProfile] = useState<TikTokProfile | null>(null)
+  const [totals, setTotals] = useState<CreatorTotal | null>(null)
   const PAGE_SIZE = 10
 
   const range = getDateRange(days)
@@ -43,8 +47,12 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
   const loadProfile = useCallback(async () => {
     setLoadingProfile(true)
     try {
-      const data = await fetchCreatorDetail(creatorId, range)
+      const [data, total] = await Promise.all([
+        fetchCreatorDetail(creatorId, range),
+        fetchCreatorTotal(creatorId, days),
+      ])
       setProfile(data)
+      setTotals(total)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -59,9 +67,12 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
       if (subTab === 'videos') {
         const data = await fetchCreatorVideos(creatorId, range, videoPage, PAGE_SIZE, videoSort)
         setVideos(Array.isArray(data) ? data : [])
-      } else {
+      } else if (subTab === 'lives') {
         const data = await fetchCreatorLives(creatorId, range, livePage, PAGE_SIZE)
         setLives(Array.isArray(data) ? data : [])
+      } else if (subTab === 'products') {
+        const data = await fetchCreatorProducts(creatorId, days, productPage, PAGE_SIZE)
+        setProducts(Array.isArray(data) ? data : [])
       }
     } catch (e: any) {
       const msg = e.message || 'Erro desconhecido'
@@ -75,11 +86,11 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
     } finally {
       setLoadingContent(false)
     }
-  }, [creatorId, days, subTab, videoPage, livePage, videoSort])
+  }, [creatorId, days, subTab, videoPage, livePage, productPage, videoSort])
 
   useEffect(() => { loadProfile() }, [loadProfile])
   useEffect(() => { loadContent() }, [loadContent])
-  useEffect(() => { setVideoPage(1); setLivePage(1) }, [days, subTab])
+  useEffect(() => { setVideoPage(1); setLivePage(1); setProductPage(1) }, [days, subTab])
 
   useEffect(() => {
     const h = creatorHandle || profile?.handle
@@ -91,34 +102,9 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
   const handle = profile?.handle || creatorHandle || ''
   const tiktokUrl = handle ? `https://www.tiktok.com/@${handle}` : '#'
 
-  // Compute summary stats from videos
-  const videoStats = (() => {
-    if (!videos.length) return null
-    let totalRevenue = 0
-    let totalSales = 0
-    let count = 0
-
-    for (const v of videos) {
-      count++
-      // Parse revenue string like "R$124,45k" to number
-      if (v.gpm) totalRevenue += v.gpm
-      if (typeof v.sale === 'number') totalSales += v.sale
-      else if (typeof v.sale === 'string') {
-        const n = parseFloat(v.sale.replace(/[^\d,.]/g, '').replace(',', '.'))
-        if (!isNaN(n)) {
-          if (v.sale.includes('k')) totalSales += n * 1000
-          else if (v.sale.includes('m')) totalSales += n * 1000000
-          else totalSales += n
-        }
-      }
-    }
-
-    return { count, totalSales: Math.round(totalSales) }
-  })()
-
-  const currentData = subTab === 'videos' ? videos : lives
-  const currentPage = subTab === 'videos' ? videoPage : livePage
-  const setCurrentPage = subTab === 'videos' ? setVideoPage : setLivePage
+  const currentData = subTab === 'videos' ? videos : subTab === 'lives' ? lives : products
+  const currentPage = subTab === 'videos' ? videoPage : subTab === 'lives' ? livePage : productPage
+  const setCurrentPage = subTab === 'videos' ? setVideoPage : subTab === 'lives' ? setLivePage : setProductPage
 
   return (
     <div className="creator-detail">
@@ -187,48 +173,65 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
       {/* STATS OVERVIEW */}
       <div className="cd-stats-grid">
         <div className="cd-stat-card">
+          <div className="cd-stat-icon green"><DollarSign size={18} /></div>
+          <div>
+            <span className="cd-stat-label">Receita Total</span>
+            <span className="cd-stat-value">{totals?.revenue || '-'}</span>
+            {totals?.day_revenue && <span className="cd-stat-daily">Hoje: {totals.day_revenue}</span>}
+          </div>
+        </div>
+        <div className="cd-stat-card">
+          <div className="cd-stat-icon accent"><ShoppingBag size={18} /></div>
+          <div>
+            <span className="cd-stat-label">Vendas</span>
+            <span className="cd-stat-value">{totals?.sale || '-'}</span>
+            {totals?.day_sale && <span className="cd-stat-daily">Hoje: {totals.day_sale}</span>}
+          </div>
+        </div>
+        <div className="cd-stat-card">
+          <div className="cd-stat-icon orange"><PlayCircle size={18} /></div>
+          <div>
+            <span className="cd-stat-label">Receita Videos</span>
+            <span className="cd-stat-value">{totals?.video_revenue || '-'}</span>
+            {totals?.day_video_revenue && <span className="cd-stat-daily">Hoje: {totals.day_video_revenue}</span>}
+          </div>
+        </div>
+        <div className="cd-stat-card">
+          <div className="cd-stat-icon pink"><Megaphone size={18} /></div>
+          <div>
+            <span className="cd-stat-label">Receita Lives</span>
+            <span className="cd-stat-value">{totals?.live_revenue || '-'}</span>
+            {totals?.day_live_revenue && <span className="cd-stat-daily">Hoje: {totals.day_live_revenue}</span>}
+          </div>
+        </div>
+        <div className="cd-stat-card">
+          <div className="cd-stat-icon blue"><Eye size={18} /></div>
+          <div>
+            <span className="cd-stat-label">Views Videos</span>
+            <span className="cd-stat-value">{totals?.video_views || '-'}</span>
+            {totals?.day_video_views && <span className="cd-stat-daily">Hoje: {totals.day_video_views}</span>}
+          </div>
+        </div>
+        <div className="cd-stat-card">
           <div className="cd-stat-icon blue"><Users size={18} /></div>
           <div>
             <span className="cd-stat-label">Seguidores</span>
-            <span className="cd-stat-value">
-              {tiktokProfile?.followerCount
-                ? formatNumber(tiktokProfile.followerCount)
-                : profile?.follower_count || '-'}
-            </span>
+            <span className="cd-stat-value">{totals?.followers || profile?.follower_count || '-'}</span>
+            {totals?.day_followers && <span className="cd-stat-daily">Hoje: +{totals.day_followers}</span>}
           </div>
         </div>
         <div className="cd-stat-card">
-          <div className="cd-stat-icon pink"><Heart size={18} /></div>
+          <div className="cd-stat-icon orange"><TrendingUp size={18} /></div>
           <div>
-            <span className="cd-stat-label">Curtidas</span>
-            <span className="cd-stat-value">
-              {tiktokProfile?.heartCount ? formatNumber(tiktokProfile.heartCount) : '-'}
-            </span>
+            <span className="cd-stat-label">Preco Medio</span>
+            <span className="cd-stat-value">{totals?.unit_price || '-'}</span>
           </div>
         </div>
         <div className="cd-stat-card">
-          <div className="cd-stat-icon orange"><ShoppingBag size={18} /></div>
+          <div className="cd-stat-icon green"><ShoppingBag size={18} /></div>
           <div>
             <span className="cd-stat-label">Produtos</span>
             <span className="cd-stat-value">{profile?.product_count || '-'}</span>
-          </div>
-        </div>
-        <div className="cd-stat-card">
-          <div className="cd-stat-icon accent"><Video size={18} /></div>
-          <div>
-            <span className="cd-stat-label">Videos Total</span>
-            <span className="cd-stat-value">
-              {tiktokProfile?.videoCount
-                ? tiktokProfile.videoCount.toLocaleString('pt-BR')
-                : '-'}
-            </span>
-          </div>
-        </div>
-        <div className="cd-stat-card">
-          <div className="cd-stat-icon green"><TrendingUp size={18} /></div>
-          <div>
-            <span className="cd-stat-label">Vendas (Periodo)</span>
-            <span className="cd-stat-value">{videoStats ? videoStats.totalSales.toLocaleString('pt-BR') : '-'}</span>
           </div>
         </div>
       </div>
@@ -299,6 +302,12 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
           onClick={() => setSubTab('lives')}
         >
           <Megaphone size={14} /> Lives
+        </button>
+        <button
+          className={`cd-sub-tab ${subTab === 'products' ? 'active' : ''}`}
+          onClick={() => setSubTab('products')}
+        >
+          <ShoppingBag size={14} /> Produtos
         </button>
 
         {subTab === 'videos' && (
@@ -416,6 +425,47 @@ export default function CreatorDetail({ creatorId, creatorHandle, creatorNicknam
                       <td className="cd-td-sales">{l.sale?.toLocaleString('pt-BR') ?? '-'}</td>
                       <td className="cd-td-views">{l.views || '-'}</td>
                       <td className="cd-td-date">{l.create_time || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {!loadingContent && !error && subTab === 'products' && (
+          <div className="cd-table-wrap">
+            {products.length === 0 ? (
+              <div className="state-msg">Nenhum produto encontrado no periodo.</div>
+            ) : (
+              <table className="cd-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Produto</th>
+                    <th>Receita</th>
+                    <th>Vendas</th>
+                    <th>Preco</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {products.map((p, i) => (
+                    <tr key={p.id || i}>
+                      <td className="cd-td-rank">{(productPage - 1) * PAGE_SIZE + i + 1}</td>
+                      <td className="cd-td-desc">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <img
+                            src={`/api/product/${p.id}/image`}
+                            alt=""
+                            className="cd-product-thumb"
+                            onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                          />
+                          <span className="cd-video-title">{p.product_title || 'Sem titulo'}</span>
+                        </div>
+                      </td>
+                      <td className="cd-td-revenue">{p.revenue || '-'}</td>
+                      <td className="cd-td-sales">{p.sale || '-'}</td>
+                      <td className="cd-td-views">{p.unit_price || '-'}</td>
                     </tr>
                   ))}
                 </tbody>

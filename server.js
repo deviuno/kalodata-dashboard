@@ -398,6 +398,72 @@ app.get('/api/products', (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
+// Product image proxy (KaloCDN)
+// ---------------------------------------------------------------------------
+const productImgCache = new Map()
+
+/**
+ * @swagger
+ * /api/product/{id}/image:
+ *   get:
+ *     summary: Proxy para imagem do produto (KaloCDN)
+ *     tags: [Products]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Imagem PNG do produto
+ *         content:
+ *           image/png:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       404:
+ *         description: Imagem nao encontrada
+ */
+app.get('/api/product/:id/image', (req, res) => {
+  const { id } = req.params
+  if (!/^\d+$/.test(id)) return res.status(400).send('Invalid id')
+
+  const cached = productImgCache.get(id)
+  if (cached && Date.now() < cached.expiresAt) {
+    res.set('Content-Type', cached.contentType)
+    res.set('Cache-Control', 'public, max-age=86400')
+    return res.send(cached.buffer)
+  }
+
+  try {
+    const result = execFileSync('curl', [
+      '-s', '--max-time', '15', '-L',
+      `https://img.kalocdn.com/tiktok.product/${id}/cover.png`,
+    ], { timeout: 20000 })
+
+    if (result.length < 100) {
+      return res.status(404).send('Image not found')
+    }
+
+    const contentType = 'image/png'
+    productImgCache.set(id, { buffer: result, contentType, expiresAt: Date.now() + 86400000 })
+
+    // Evict old entries if cache grows too large
+    if (productImgCache.size > 500) {
+      const oldest = productImgCache.keys().next().value
+      productImgCache.delete(oldest)
+    }
+
+    res.set('Content-Type', contentType)
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.send(result)
+  } catch (e) {
+    res.status(502).send('Failed to fetch image')
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Videos
 // ---------------------------------------------------------------------------
 
@@ -555,6 +621,262 @@ app.get('/api/creators', (req, res) => {
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
+    })
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Creator avatar proxy (KaloCDN)
+// ---------------------------------------------------------------------------
+
+/**
+ * @swagger
+ * /api/creator-avatar/{id}:
+ *   get:
+ *     summary: Proxy para avatar do criador (KaloCDN)
+ *     tags: [Creators]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Imagem PNG do avatar
+ *         content:
+ *           image/png:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       404:
+ *         description: Avatar nao encontrado
+ */
+app.get('/api/creator-avatar/:id', (req, res) => {
+  const { id } = req.params
+  if (!/^\d+$/.test(id)) return res.status(400).send('Invalid id')
+
+  const cached = productImgCache.get('avatar_' + id)
+  if (cached && Date.now() < cached.expiresAt) {
+    res.set('Content-Type', cached.contentType)
+    res.set('Cache-Control', 'public, max-age=86400')
+    return res.send(cached.buffer)
+  }
+
+  try {
+    const result = execFileSync('curl', [
+      '-s', '--max-time', '15', '-L',
+      `https://img.kalocdn.com/tiktok.creator/${id}/avatar_medium.png`,
+    ], { timeout: 20000 })
+
+    if (result.length < 100) return res.status(404).send('Image not found')
+
+    productImgCache.set('avatar_' + id, { buffer: result, contentType: 'image/png', expiresAt: Date.now() + 86400000 })
+    if (productImgCache.size > 500) {
+      const oldest = productImgCache.keys().next().value
+      productImgCache.delete(oldest)
+    }
+
+    res.set('Content-Type', 'image/png')
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.send(result)
+  } catch (e) {
+    res.status(502).send('Failed to fetch image')
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Creator search (fullText), products & totals
+// ---------------------------------------------------------------------------
+
+/**
+ * @swagger
+ * /api/search/creators:
+ *   get:
+ *     summary: Buscar criadores por nome ou handle
+ *     tags: [Creators]
+ *     parameters:
+ *       - in: query
+ *         name: keyword
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Termo de busca (nome ou handle)
+ *     responses:
+ *       200:
+ *         description: Lista de criadores encontrados
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       creator_uid:
+ *                         type: string
+ *                       creator_handle:
+ *                         type: string
+ *                       creator_nickname:
+ *                         type: string
+ *                       gmv_in_30:
+ *                         type: number
+ *                         description: Receita dos ultimos 30 dias
+ *       500:
+ *         description: Erro interno
+ */
+app.get('/api/search/creators', (req, res) => {
+  try {
+    const keyword = (req.query.keyword || '').trim()
+    if (!keyword) return res.json({ success: true, data: [] })
+
+    const data = kaloPost('/overview/fullText/search', {
+      country_code: 'br',
+      keyword,
+      scope: [{ index: 'creator', pageNo: 1, pageSize: 20 }],
+    })
+    const creators = data?.data?.creator || []
+    res.json({ success: true, data: creators })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/creator/{id}/products:
+ *   get:
+ *     summary: Listar produtos vendidos por um criador
+ *     tags: [Creators]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID do criador
+ *       - in: query
+ *         name: days
+ *         schema:
+ *           type: integer
+ *           default: 7
+ *           enum: [7, 30]
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: pageSize
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: Lista de produtos do criador
+ *       500:
+ *         description: Erro interno
+ */
+app.get('/api/creator/:id/products', (req, res) => {
+  try {
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const page = parseInt(req.query.page) || 1
+    const pageSize = parseInt(req.query.pageSize) || 10
+    const range = getDateRange(days)
+
+    const data = kaloPost('/creator/detail/searchProducts', {
+      id,
+      ...range,
+      cateIds: [],
+      sellerId: '',
+      authority: true,
+      pageNo: page,
+      pageSize,
+      sort: [{ field: 'revenue', type: 'DESC' }],
+    })
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/creator/{id}/total:
+ *   get:
+ *     summary: Obter estatisticas totais de vendas do criador
+ *     tags: [Creators]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID do criador
+ *       - in: query
+ *         name: days
+ *         schema:
+ *           type: integer
+ *           default: 7
+ *           enum: [7, 30]
+ *     responses:
+ *       200:
+ *         description: Estatisticas do criador (receita, vendas, views, seguidores, etc.)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     revenue:
+ *                       type: string
+ *                       example: "R$2,47m"
+ *                     sale:
+ *                       type: string
+ *                       example: "52,78k"
+ *                     video_revenue:
+ *                       type: string
+ *                     live_revenue:
+ *                       type: string
+ *                     video_views:
+ *                       type: string
+ *                     followers:
+ *                       type: string
+ *                     day_revenue:
+ *                       type: string
+ *                     day_sale:
+ *                       type: string
+ *                     day_followers:
+ *                       type: string
+ *                     unit_price:
+ *                       type: string
+ *       500:
+ *         description: Erro interno
+ */
+app.get('/api/creator/:id/total', (req, res) => {
+  try {
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const range = getDateRange(days)
+
+    const data = kaloPost('/creator/detail/total', {
+      id,
+      ...range,
+      cateIds: [],
+      sellerId: '',
+      authority: true,
     })
     res.json(data)
   } catch (e) {
