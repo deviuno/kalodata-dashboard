@@ -5,10 +5,10 @@
   "description": "Exibe os cookies do Kalodata para copiar facilmente",
   "permissions": ["cookies"],
   "host_permissions": [
-    "https://www.kalodata.com/*",
+    "https://*.kalodata.com/*",
     "https://kalodata.com/*",
-    "https://clip.kalowave.com/*",
-    "https://www.kaloclip.com/*"
+    "https://*.kalowave.com/*",
+    "https://*.kaloclip.com/*"
   ],
   "action": {
     "default_popup": "popup.html",

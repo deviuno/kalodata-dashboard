@@ -1,6 +1,6 @@
 const DOMAINS = {
-  kalodata: ['www.kalodata.com', 'kalodata.com'],
-  kalowave: ['clip.kalowave.com', 'www.kaloclip.com'],
+  kalodata: ['.kalodata.com', 'www.kalodata.com', 'kalodata.com'],
+  kalowave: ['.kalowave.com', 'clip.kalowave.com', 'www.kaloclip.com', '.kaloclip.com'],
 }
 
 let currentDomain = 'kalodata'
@@ -9,12 +9,14 @@ let currentCookieString = ''
 async function loadCookies(domain) {
   currentDomain = domain
   const urls = DOMAINS[domain]
+  const seen = new Set()
   const allCookies = []
 
   for (const url of urls) {
     const cookies = await chrome.cookies.getAll({ domain: url })
     for (const c of cookies) {
-      if (!allCookies.find(x => x.name === c.name)) {
+      if (!seen.has(c.name)) {
+        seen.add(c.name)
         allCookies.push(c)
       }
     }
@@ -32,9 +34,15 @@ async function loadCookies(domain) {
     return
   }
 
+  // Check for critical cookies
+  const hasCfClearance = allCookies.some(c => c.name === 'cf_clearance')
+  const hasSession = allCookies.some(c => c.name === 'SESSION')
+
   currentCookieString = allCookies.map(c => `${c.name}=${c.value}`).join('; ')
   box.textContent = currentCookieString
   count.textContent = `${allCookies.length} cookies`
+    + (hasCfClearance ? ' ✓ cf_clearance' : ' ✗ cf_clearance')
+    + (hasSession ? ' ✓ SESSION' : ' ✗ SESSION')
   copyBtn.style.display = 'flex'
   copyBtn.textContent = 'Copiar Cookies'
   copyBtn.classList.remove('copied')
