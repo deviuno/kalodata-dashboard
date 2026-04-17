@@ -8,9 +8,10 @@ import ProductCard from './components/ProductCard'
 import VideoCard from './components/VideoCard'
 import CreatorCard from './components/CreatorCard'
 import CreatorDetail from './components/CreatorDetail'
+import ProductDetail from './components/ProductDetail'
 import {
   fetchProducts, fetchVideos, fetchHotVideos, fetchCreators,
-  searchCreators, checkSession, getDateRange, type DateRange,
+  searchCreators, checkSession, getDateRange, getLastCached, type DateRange,
   type CreatorSearchItem,
 } from './lib/kalodata'
 import './App.css'
@@ -44,11 +45,13 @@ export default function App() {
   const [savingCookies, setSavingCookies] = useState(false)
   const [cookieSaveMsg, setCookieSaveMsg] = useState<string | null>(null)
   const [selectedCreator, setSelectedCreator] = useState<{ id: string; handle?: string; nickname?: string } | null>(null)
+  const [selectedProduct, setSelectedProduct] = useState<{ id: string; title?: string } | null>(null)
   const [creatorSearch, setCreatorSearch] = useState('')
   const [searchingCreator, setSearchingCreator] = useState(false)
   const [searchResults, setSearchResults] = useState<CreatorSearchItem[]>([])
   const [showSearchResults, setShowSearchResults] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
+  const [upstreamCached, setUpstreamCached] = useState<boolean | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null)
 
   // Check session on mount
@@ -79,6 +82,7 @@ export default function App() {
       }
 
       setData(Array.isArray(result) ? result : [])
+      setUpstreamCached(getLastCached())
     } catch (e: any) {
       const msg = e.message || 'Erro desconhecido'
       if (msg.includes('DATE_SPACING') || msg.includes('exceeds span')) {
@@ -97,7 +101,7 @@ export default function App() {
   useEffect(() => { load() }, [load])
 
   // Reset page when tab or days change
-  useEffect(() => { setPage(1); setSelectedCreator(null) }, [tab, days])
+  useEffect(() => { setPage(1); setSelectedCreator(null); setSelectedProduct(null) }, [tab, days])
 
   const tabs: { key: Tab; label: string; icon: any }[] = [
     { key: 'products', label: 'Produtos Top', icon: ShoppingBag },
@@ -108,7 +112,7 @@ export default function App() {
 
   const range = getDateRange(days)
   const showDateFilter = tab !== 'hot-videos'
-  const showPagination = (data.length >= PAGE_SIZE || page > 1) && !selectedCreator
+  const showPagination = (data.length >= PAGE_SIZE || page > 1) && !selectedCreator && !selectedProduct
 
   return (
     <div className="app">
@@ -241,7 +245,7 @@ export default function App() {
       </nav>
 
       {/* FILTERS */}
-      {!selectedCreator && <div className="filters-bar">
+      {!selectedCreator && !selectedProduct && <div className="filters-bar">
         {showDateFilter && (
           <div className="date-filter">
             <Clock size={14} />
@@ -262,6 +266,11 @@ export default function App() {
           )}
           {!showDateFilter && (
             <span className="filter-range">Trending agora</span>
+          )}
+          {upstreamCached && (
+            <span className="filter-cached" title="Kalodata serviu essa resposta do cache deles. Dados podem estar defasados por minutos/horas.">
+              cache upstream
+            </span>
           )}
         </div>
       </div>}
@@ -284,12 +293,25 @@ export default function App() {
 
         {!loading && !error && (
           <>
-            {tab === 'products' && (
+            {tab === 'products' && !selectedProduct && (
               <div className="grid products-grid">
                 {data.map((p, i) => (
-                  <ProductCard key={p.id || i} product={p} rank={(page - 1) * PAGE_SIZE + i + 1} />
+                  <ProductCard
+                    key={p.id || i}
+                    product={p}
+                    rank={(page - 1) * PAGE_SIZE + i + 1}
+                    onSelect={(id, title) => setSelectedProduct({ id, title })}
+                  />
                 ))}
               </div>
+            )}
+
+            {tab === 'products' && selectedProduct && (
+              <ProductDetail
+                productId={selectedProduct.id}
+                productTitle={selectedProduct.title}
+                onBack={() => setSelectedProduct(null)}
+              />
             )}
 
             {tab === 'hot-videos' && (
@@ -398,7 +420,7 @@ export default function App() {
               />
             )}
 
-            {data.length === 0 && !loading && (
+            {data.length === 0 && !loading && !selectedCreator && !selectedProduct && (
               <div className="state-msg">Nenhum resultado encontrado.</div>
             )}
           </>

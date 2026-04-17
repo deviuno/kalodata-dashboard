@@ -1,3 +1,9 @@
+// Tracks whether the most recent upstream Kalodata response was served from
+// their cache. Consumers (App.tsx) read this right after a fetch to surface
+// the info to the user.
+let lastCached: boolean | null = null
+export function getLastCached(): boolean | null { return lastCached }
+
 async function post<T = any>(path: string, body: Record<string, any>): Promise<T> {
   const res = await fetch(`/api/kalo/${path}`, {
     method: 'POST',
@@ -8,6 +14,7 @@ async function post<T = any>(path: string, body: Record<string, any>): Promise<T
   if (!json.success) {
     throw new Error(json.message || 'API error')
   }
+  lastCached = json.cached === true
   return json.data
 }
 
@@ -28,7 +35,10 @@ export function getDateRange(days: number): DateRange {
 }
 
 function fmt(d: Date): string {
-  return d.toISOString().split('T')[0]
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${dd}`
 }
 
 export async function fetchProducts(
@@ -84,6 +94,58 @@ export async function fetchCreators(
     showCateIds: [],
     sort: [{ field: sortField, type: 'DESC' }],
   })
+}
+
+export async function fetchProductDetail(id: string, days = 7) {
+  const res = await fetch(`/api/product/${id}/detail?days=${days}`)
+  const json = await res.json()
+  if (!json.success) throw new Error(json.message || 'API error')
+  return json.data
+}
+
+export interface ProductTotal {
+  revenue?: string
+  sale?: string
+  unit_price?: string
+  video_revenue?: string
+  live_revenue?: string
+  shopping_mall_revenue?: string
+  related_creator_count?: number
+  creatorConversionRatio?: number
+  day_revenue?: string
+  day_sale?: string
+  day_video_revenue?: string
+  day_live_revenue?: string
+  day_shopping_mall_revenue?: string
+}
+
+export async function fetchProductTotal(id: string, days = 7): Promise<ProductTotal | null> {
+  try {
+    const res = await fetch(`/api/product/${id}/total?days=${days}`)
+    const json = await res.json()
+    return json.success ? json.data : null
+  } catch {
+    return null
+  }
+}
+
+export async function fetchProductVideos(
+  id: string,
+  days = 7,
+  pageNo = 1,
+  pageSize = 10,
+  sortField = 'revenue',
+) {
+  const params = new URLSearchParams({
+    days: String(days),
+    page: String(pageNo),
+    pageSize: String(pageSize),
+    sortField,
+  })
+  const res = await fetch(`/api/product/${id}/videos?${params}`)
+  const json = await res.json()
+  if (!json.success) throw new Error(json.message || 'API error')
+  return json.data
 }
 
 export async function fetchCreatorDetail(

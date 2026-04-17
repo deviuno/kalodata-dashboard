@@ -24,11 +24,27 @@ function productImageUrl(id: string) {
   return `/api/product/${id}/image`
 }
 
-export default function ProductCard({ product: p, rank }: { product: any; rank: number }) {
+interface ProductCardProps {
+  product: any
+  rank: number
+  onSelect?: (id: string, title?: string) => void
+}
+
+export default function ProductCard({ product: p, rank, onSelect }: ProductCardProps) {
   const [imgError, setImgError] = useState(false)
 
+  const clickable = !!onSelect && !!p.id
+  const handleClick = () => { if (clickable) onSelect!(p.id, p.product_title) }
+
   return (
-    <div className="card" style={{ animationDelay: `${rank * 0.03}s` }}>
+    <div
+      className={`card${clickable ? ' card-clickable' : ''}`}
+      style={{ animationDelay: `${rank * 0.03}s` }}
+      onClick={handleClick}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={clickable ? (e => { if (e.key === 'Enter') handleClick() }) : undefined}
+    >
       <div className="card-top">
         <div className={`card-rank ${rankClass(rank)}`}>{rank}</div>
         <div className="product-img-wrapper">

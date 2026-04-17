@@ -233,11 +233,18 @@ function kalowavePost(path, body) {
 // Date helpers
 // ---------------------------------------------------------------------------
 function getDateRange(days) {
+  // Use local date components (not toISOString → UTC) so the "yesterday" window
+  // matches the user's calendar day in America/Sao_Paulo, not UTC.
+  const fmt = (d) => {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${dd}`
+  }
   const end = new Date()
   end.setDate(end.getDate() - 1)
   const start = new Date(end)
   start.setDate(start.getDate() - (days - 1))
-  const fmt = (d) => d.toISOString().split('T')[0]
   return { startDate: fmt(start), endDate: fmt(end) }
 }
 
@@ -648,6 +655,120 @@ app.get('/api/videos/hot', (req, res) => {
       country: 'BR',
       pageIndex: page,
       pageSize,
+    })
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Product detail
+// ---------------------------------------------------------------------------
+
+/**
+ * @swagger
+ * /api/product/{id}/detail:
+ *   get:
+ *     summary: Detalhes de um produto (metadata, SKUs, categorias)
+ *     tags: [Products]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 7, enum: [7, 30] }
+ *     responses:
+ *       200: { description: Dados do produto }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/product/:id/detail', (req, res) => {
+  try {
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const range = getDateRange(days)
+    const data = kaloPost('/product/detail', { country: 'BR', id, ...range })
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/product/{id}/total:
+ *   get:
+ *     summary: KPIs agregados de um produto (receita, vendas, video/live/shopping mall revenue)
+ *     tags: [Products]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 7, enum: [7, 30] }
+ *     responses:
+ *       200: { description: Totais do produto }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/product/:id/total', (req, res) => {
+  try {
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const range = getDateRange(days)
+    const data = kaloPost('/product/detail/total', { country: 'BR', id, ...range })
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/product/{id}/videos:
+ *   get:
+ *     summary: Videos e anuncios que venderam um produto
+ *     tags: [Products, Videos]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 7, enum: [7, 30] }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 10 }
+ *       - in: query
+ *         name: sortField
+ *         schema: { type: string, default: revenue, enum: [revenue, views, sale, gpm] }
+ *     responses:
+ *       200: { description: Lista de videos }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/product/:id/videos', (req, res) => {
+  try {
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const page = parseInt(req.query.page) || 1
+    const pageSize = parseInt(req.query.pageSize) || 10
+    const sortField = req.query.sortField || 'revenue'
+    const range = getDateRange(days)
+
+    const data = kaloPost('/product/detail/video/queryList', {
+      id,
+      ...range,
+      authority: true,
+      pageNo: page,
+      pageSize,
+      sort: [{ field: sortField, type: 'DESC' }],
     })
     res.json(data)
   } catch (e) {
@@ -1369,16 +1490,73 @@ app.post('/api/insight/:videoId/transcript', (req, res) => {
 // ---------------------------------------------------------------------------
 // Creator Avatar (TikTok profile scrape)
 // ---------------------------------------------------------------------------
+// Cache with timestamp-based expiry (reading the entry also validates freshness).
+// TTL of 5min balances TikTok metrics staleness (follower count) vs scrape cost.
+const TIKTOK_CACHE_TTL = 5 * 60 * 1000
 const tiktokProfileCache = new Map()
 
+function getTikTokCache(handle) {
+  const entry = tiktokProfileCache.get(handle)
+  if (!entry) return null
+  if (Date.now() >= entry.expiresAt) {
+    tiktokProfileCache.delete(handle)
+    return null
+  }
+  return entry.data
+}
+
+function setTikTokCache(handle, data) {
+  tiktokProfileCache.set(handle, { data, expiresAt: Date.now() + TIKTOK_CACHE_TTL })
+}
+
+/**
+ * @swagger
+ * /api/creator/{handle}/avatar:
+ *   get:
+ *     summary: Raspa avatar e metricas publicas do TikTok (bio, followers, likes)
+ *     tags: [Creators]
+ *     parameters:
+ *       - in: path
+ *         name: handle
+ *         required: true
+ *         schema: { type: string }
+ *         description: Handle do TikTok (sem @)
+ *       - in: query
+ *         name: refresh
+ *         schema: { type: string, enum: ["1"] }
+ *         description: Forca refresh ignorando cache de 5min
+ *     responses:
+ *       200:
+ *         description: Dados publicos do perfil (cache 5min)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 cached: { type: boolean, description: true se resposta veio do cache local }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     url: { type: string, description: URL do avatar }
+ *                     bioLink: { type: string }
+ *                     followerCount: { type: integer }
+ *                     followingCount: { type: integer }
+ *                     heartCount: { type: integer }
+ *                     videoCount: { type: integer }
+ *       400: { description: Handle invalido }
+ *       500: { description: Erro interno }
+ */
 app.get('/api/creator/:handle/avatar', (req, res) => {
   const { handle } = req.params
+  const forceRefresh = req.query.refresh === '1'
   if (!handle || !/^[\w.]+$/.test(handle)) {
     return res.status(400).json({ success: false, message: 'Invalid handle' })
   }
 
-  if (tiktokProfileCache.has(handle)) {
-    return res.json({ success: true, data: tiktokProfileCache.get(handle) })
+  if (!forceRefresh) {
+    const cached = getTikTokCache(handle)
+    if (cached) return res.json({ success: true, data: cached, cached: true })
   }
 
   try {
@@ -1416,9 +1594,8 @@ app.get('/api/creator/:handle/avatar', (req, res) => {
     if (videoMatch) data.videoCount = parseInt(videoMatch[1])
 
     if (data.url || data.bioLink) {
-      tiktokProfileCache.set(handle, data)
-      setTimeout(() => tiktokProfileCache.delete(handle), 3600000)
-      return res.json({ success: true, data })
+      setTikTokCache(handle, data)
+      return res.json({ success: true, data, cached: false })
     }
 
     res.json({ success: false, message: 'Profile data not found' })
@@ -1430,15 +1607,62 @@ app.get('/api/creator/:handle/avatar', (req, res) => {
 // ---------------------------------------------------------------------------
 // Creator Search (TikTok handle -> ID + profile)
 // ---------------------------------------------------------------------------
+
+/**
+ * @swagger
+ * /api/creator/search/{handle}:
+ *   get:
+ *     summary: Busca criador no TikTok pelo handle e retorna userId + perfil completo
+ *     tags: [Creators]
+ *     parameters:
+ *       - in: path
+ *         name: handle
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: refresh
+ *         schema: { type: string, enum: ["1"] }
+ *         description: Forca refresh ignorando cache de 5min
+ *     responses:
+ *       200:
+ *         description: Perfil completo com userId
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 cached: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     userId: { type: string }
+ *                     handle: { type: string }
+ *                     nickname: { type: string }
+ *                     signature: { type: string, description: Bio do criador }
+ *                     url: { type: string }
+ *                     bioLink: { type: string }
+ *                     followerCount: { type: integer }
+ *                     followingCount: { type: integer }
+ *                     heartCount: { type: integer }
+ *                     videoCount: { type: integer }
+ *       400: { description: Handle invalido }
+ *       500: { description: Erro interno }
+ */
 app.get('/api/creator/search/:handle', (req, res) => {
   const { handle } = req.params
+  const forceRefresh = req.query.refresh === '1'
   if (!handle || !/^[\w.]+$/.test(handle)) {
     return res.status(400).json({ success: false, message: 'Invalid handle' })
   }
 
-  // Check cache first (avatar endpoint caches profile data)
-  if (tiktokProfileCache.has(handle) && tiktokProfileCache.get(handle).userId) {
-    return res.json({ success: true, data: tiktokProfileCache.get(handle) })
+  // Check cache first (avatar endpoint caches profile data).
+  // Only serve from cache if the entry has userId (search needs it).
+  if (!forceRefresh) {
+    const cached = getTikTokCache(handle)
+    if (cached && cached.userId) {
+      return res.json({ success: true, data: cached, cached: true })
+    }
   }
 
   try {
@@ -1486,9 +1710,8 @@ app.get('/api/creator/search/:handle', (req, res) => {
     data.handle = handle
 
     if (data.userId) {
-      tiktokProfileCache.set(handle, data)
-      setTimeout(() => tiktokProfileCache.delete(handle), 3600000)
-      return res.json({ success: true, data })
+      setTikTokCache(handle, data)
+      return res.json({ success: true, data, cached: false })
     }
 
     res.json({ success: false, message: 'Creator not found on TikTok' })

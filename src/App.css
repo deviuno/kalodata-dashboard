@@ -556,6 +556,31 @@
   font-variant-numeric: tabular-nums;
 }
 
+.cd-videos-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 24px 0 12px;
+  padding: 0 4px;
+}
+
+.filter-cached {
+  margin-left: 10px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--orange, #d97706);
+  background: color-mix(in srgb, var(--orange, #d97706) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--orange, #d97706) 35%, transparent);
+  border-radius: 999px;
+  cursor: help;
+}
+
 /* ── PAGINATION ── */
 .pagination {
   display: flex;
