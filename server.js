@@ -6,6 +6,7 @@ import { Resend } from 'resend'
 import cron from 'node-cron'
 import swaggerJsdoc from 'swagger-jsdoc'
 import swaggerUi from 'swagger-ui-express'
+import { headersForCountry, parseCountry, countryLowercase, DEFAULT_COUNTRY } from './lib/countries.js'
 
 const app = express()
 app.use(cors())
@@ -80,18 +81,20 @@ function setCookies(cookies) {
 // ---------------------------------------------------------------------------
 // Kalodata proxy helper
 // ---------------------------------------------------------------------------
-function kaloPost(path, body) {
+function kaloPost(path, body, country = DEFAULT_COUNTRY) {
   const cookies = getCookies()
   if (!cookies) throw new Error('cookies.txt not found or empty')
+
+  const ctx = headersForCountry(country)
 
   const args = [
     '-s', '--max-time', '30',
     '-A', UA,
     '-b', cookies,
     '-H', 'content-type: application/json',
-    '-H', 'country: BR',
-    '-H', 'currency: BRL',
-    '-H', 'language: pt-BR',
+    '-H', `country: ${ctx.country}`,
+    '-H', `currency: ${ctx.currency}`,
+    '-H', `language: ${ctx.language}`,
     '-H', 'origin: https://www.kalodata.com',
     '-H', 'referer: https://www.kalodata.com/explore',
     '-H', 'sec-ch-ua: "Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
@@ -114,18 +117,20 @@ function kaloPost(path, body) {
   return JSON.parse(result)
 }
 
-function kaloGet(path) {
+function kaloGet(path, country = DEFAULT_COUNTRY) {
   const cookies = getCookies()
   if (!cookies) throw new Error('cookies.txt not found or empty')
+
+  const ctx = headersForCountry(country)
 
   const args = [
     '-s', '--max-time', '30',
     '-A', UA,
     '-b', cookies,
     '-H', 'accept: application/json, text/plain, */*',
-    '-H', 'country: BR',
-    '-H', 'currency: BRL',
-    '-H', 'language: pt-BR',
+    '-H', `country: ${ctx.country}`,
+    '-H', `currency: ${ctx.currency}`,
+    '-H', `language: ${ctx.language}`,
     '-H', 'origin: https://www.kalodata.com',
     '-H', 'referer: https://www.kalodata.com/creator/detail',
     '-H', 'sec-ch-ua: "Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
@@ -460,6 +465,7 @@ app.get('/api/docs.json', (_req, res) => res.json(swaggerSpec))
  */
 app.get('/api/products', (req, res) => {
   try {
+    const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
@@ -467,14 +473,14 @@ app.get('/api/products', (req, res) => {
     const range = getDateRange(days)
 
     const data = kaloPost('/product/queryList', {
-      country: 'BR',
+      country,
       ...range,
       pageNo: page,
       pageSize,
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -596,7 +602,8 @@ app.get('/api/video/:id/url', (req, res) => {
   const { id } = req.params
   if (!/^\d+$/.test(id)) return res.status(400).json({ success: false, message: 'Invalid id' })
   try {
-    const data = kaloGet(`/video/detail/getVideoUrl?videoId=${id}`)
+    const country = parseCountry(req)
+    const data = kaloGet(`/video/detail/getVideoUrl?videoId=${id}`, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -645,6 +652,7 @@ app.get('/api/video/:id/url', (req, res) => {
  */
 app.get('/api/videos', (req, res) => {
   try {
+    const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
@@ -652,14 +660,14 @@ app.get('/api/videos', (req, res) => {
     const range = getDateRange(days)
 
     const data = kaloPost('/video/queryList', {
-      country: 'BR',
+      country,
       ...range,
       pageNo: page,
       pageSize,
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -691,14 +699,15 @@ app.get('/api/videos', (req, res) => {
  */
 app.get('/api/videos/hot', (req, res) => {
   try {
+    const country = parseCountry(req)
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
 
     const data = kaloPost('/homepage/hot/video/queryList', {
-      country: 'BR',
+      country,
       pageIndex: page,
       pageSize,
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -730,6 +739,7 @@ app.get('/api/videos/hot', (req, res) => {
  */
 app.get('/api/lives', (req, res) => {
   try {
+    const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
@@ -737,14 +747,14 @@ app.get('/api/lives', (req, res) => {
     const range = getDateRange(days)
 
     const data = kaloPost('/livestream/queryList', {
-      country: 'BR',
+      country,
       ...range,
       pageNo: page,
       pageSize,
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -780,6 +790,7 @@ app.get('/api/lives', (req, res) => {
  */
 app.get('/api/creator/:id/lives', (req, res) => {
   try {
+    const country = parseCountry(req)
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
@@ -789,12 +800,12 @@ app.get('/api/creator/:id/lives', (req, res) => {
 
     const data = kaloPost('/creator/detail/live/queryList', {
       id,
-      country: 'BR',
+      country,
       ...range,
       pageNo: page,
       pageSize,
       sort: [{ field: sortField, type: 'DESC' }],
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -830,6 +841,7 @@ app.get('/api/creator/:id/lives', (req, res) => {
  */
 app.get('/api/shops', (req, res) => {
   try {
+    const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
@@ -838,13 +850,13 @@ app.get('/api/shops', (req, res) => {
     const range = getDateRange(days)
 
     const data = kaloPost('/shop/queryList', {
-      country: 'BR',
+      country,
       ...range,
       pageNo: page,
       pageSize,
       cateIds,
       sort: [{ field: sortField, type: 'DESC' }],
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -875,10 +887,11 @@ app.get('/api/shops', (req, res) => {
  */
 app.get('/api/product/:id/detail', (req, res) => {
   try {
+    const country = parseCountry(req)
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
-    const data = kaloPost('/product/detail', { country: 'BR', id, ...range })
+    const data = kaloPost('/product/detail', { country, id, ...range }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -905,10 +918,11 @@ app.get('/api/product/:id/detail', (req, res) => {
  */
 app.get('/api/product/:id/total', (req, res) => {
   try {
+    const country = parseCountry(req)
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
-    const data = kaloPost('/product/detail/total', { country: 'BR', id, ...range })
+    const data = kaloPost('/product/detail/total', { country, id, ...range }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -944,6 +958,7 @@ app.get('/api/product/:id/total', (req, res) => {
  */
 app.get('/api/product/:id/videos', (req, res) => {
   try {
+    const country = parseCountry(req)
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
@@ -958,7 +973,7 @@ app.get('/api/product/:id/videos', (req, res) => {
       pageNo: page,
       pageSize,
       sort: [{ field: sortField, type: 'DESC' }],
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1007,6 +1022,7 @@ app.get('/api/product/:id/videos', (req, res) => {
  */
 app.get('/api/creators', (req, res) => {
   try {
+    const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = Math.min(parseInt(req.query.pageSize) || 10, 10)
@@ -1014,14 +1030,14 @@ app.get('/api/creators', (req, res) => {
     const range = getDateRange(days)
 
     const data = kaloPost('/creator/queryList', {
-      country: 'BR',
+      country,
       ...range,
       pageNo: page,
       pageSize,
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1107,14 +1123,15 @@ app.get('/api/creator-avatar/:id', (req, res) => {
  */
 app.get('/api/search/creators', (req, res) => {
   try {
+    const country = parseCountry(req)
     const keyword = (req.query.keyword || '').trim()
     if (!keyword) return res.json({ success: true, data: [] })
 
     const data = kaloPost('/overview/fullText/search', {
-      country_code: 'br',
+      country_code: countryLowercase(country),
       keyword,
       scope: [{ index: 'creator', pageNo: 1, pageSize: 20 }],
-    })
+    }, country)
     const creators = data?.data?.creator || []
     res.json({ success: true, data: creators })
   } catch (e) {
@@ -1159,6 +1176,7 @@ app.get('/api/search/creators', (req, res) => {
  */
 app.get('/api/creator/:id/products', (req, res) => {
   try {
+    const country = parseCountry(req)
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
@@ -1174,7 +1192,7 @@ app.get('/api/creator/:id/products', (req, res) => {
       pageNo: page,
       pageSize,
       sort: [{ field: 'revenue', type: 'DESC' }],
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1240,6 +1258,7 @@ app.get('/api/creator/:id/products', (req, res) => {
  */
 app.get('/api/creator/:id/total', (req, res) => {
   try {
+    const country = parseCountry(req)
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
@@ -1250,7 +1269,7 @@ app.get('/api/creator/:id/total', (req, res) => {
       cateIds: [],
       sellerId: '',
       authority: true,
-    })
+    }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1535,6 +1554,56 @@ app.post('/api/kalowave/refresh', requireAdminKey, (_req, res) => {
  */
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() })
+})
+
+/**
+ * @swagger
+ * /api/probe-country:
+ *   get:
+ *     summary: Validar se um country code é aceito pelo upstream Kalodata
+ *     tags: [Session]
+ *     parameters:
+ *       - in: query
+ *         name: country
+ *         required: true
+ *         schema: { type: string, enum: [BR, US, GB, DE, FR, ES, IT] }
+ *     responses:
+ *       200: { description: Resultado do probe (sucesso, sample size, erro se houver) }
+ */
+app.get('/api/probe-country', (req, res) => {
+  const country = parseCountry(req)
+  const t0 = Date.now()
+  try {
+    // Bate num endpoint barato (top 1 produto, sem agregações pesadas) só pra
+    // validar que o upstream aceita o country code dado e responde com data.
+    const range = getDateRange(7)
+    const data = kaloPost('/product/queryList', {
+      country,
+      ...range,
+      pageNo: 1,
+      pageSize: 1,
+      cateIds: [],
+      showCateIds: [],
+      sort: [{ field: 'revenue', type: 'DESC' }],
+    }, country)
+    const sample = data?.data?.dataList?.[0] || null
+    res.json({
+      country,
+      ok: !!data?.success,
+      hasData: !!sample,
+      sampleRevenue: sample?.revenue || null,
+      sampleProductName: sample?.product_name || null,
+      durationMs: Date.now() - t0,
+      raw: data?.success ? undefined : data,
+    })
+  } catch (e) {
+    res.status(500).json({
+      country,
+      ok: false,
+      error: e.message,
+      durationMs: Date.now() - t0,
+    })
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -1968,9 +2037,10 @@ app.use('/api/kalo', (req, res) => {
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'POST only' })
   }
+  const country = parseCountry(req)
   const kaloPath = req.url || '/'
   try {
-    const data = kaloPost(kaloPath, req.body || {})
+    const data = kaloPost(kaloPath, req.body || {}, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
