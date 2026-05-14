@@ -701,6 +701,102 @@ app.get('/api/videos/hot', (req, res) => {
   }
 })
 
+/**
+ * @swagger
+ * /api/lives:
+ *   get:
+ *     summary: Listar lives (livestreams) do TikTok Shop por receita
+ *     tags: [Lives]
+ *     parameters:
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 7, enum: [7, 30] }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 20 }
+ *       - in: query
+ *         name: sortField
+ *         schema: { type: string, default: revenue, enum: [revenue, sale, views, gpm] }
+ *     responses:
+ *       200: { description: Lista de lives }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/lives', (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7
+    const page = parseInt(req.query.page) || 1
+    const pageSize = parseInt(req.query.pageSize) || 20
+    const sortField = req.query.sortField || 'revenue'
+    const range = getDateRange(days)
+
+    const data = kaloPost('/livestream/queryList', {
+      country: 'BR',
+      ...range,
+      pageNo: page,
+      pageSize,
+      cateIds: [],
+      showCateIds: [],
+      sort: [{ field: sortField, type: 'DESC' }],
+    })
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/creator/{id}/lives:
+ *   get:
+ *     summary: Lives de um criador (todas as transmissões no período)
+ *     tags: [Lives]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 7, enum: [7, 30] }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 20 }
+ *       - in: query
+ *         name: sortField
+ *         schema: { type: string, default: revenue }
+ *     responses:
+ *       200: { description: Lives do criador }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/creator/:id/lives', (req, res) => {
+  try {
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const page = parseInt(req.query.page) || 1
+    const pageSize = parseInt(req.query.pageSize) || 20
+    const sortField = req.query.sortField || 'revenue'
+    const range = getDateRange(days)
+
+    const data = kaloPost('/creator/detail/live/queryList', {
+      id,
+      country: 'BR',
+      ...range,
+      pageNo: page,
+      pageSize,
+      sort: [{ field: sortField, type: 'DESC' }],
+    })
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Product detail
 // ---------------------------------------------------------------------------
