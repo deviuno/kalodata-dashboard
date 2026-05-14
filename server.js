@@ -797,6 +797,56 @@ app.get('/api/creator/:id/lives', (req, res) => {
   }
 })
 
+/**
+ * @swagger
+ * /api/shops:
+ *   get:
+ *     summary: Listar lojas (shops/sellers) do TikTok Shop por receita
+ *     tags: [Shops]
+ *     parameters:
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 7, enum: [7, 30] }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 20 }
+ *       - in: query
+ *         name: sortField
+ *         schema: { type: string, default: revenue, enum: [revenue, sale, gmv] }
+ *       - in: query
+ *         name: cateId
+ *         schema: { type: string }
+ *         description: Opcional - filtra por uma categoria L1
+ *     responses:
+ *       200: { description: Lista de lojas }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/shops', (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7
+    const page = parseInt(req.query.page) || 1
+    const pageSize = parseInt(req.query.pageSize) || 20
+    const sortField = req.query.sortField || 'revenue'
+    const cateIds = req.query.cateId ? [String(req.query.cateId)] : []
+    const range = getDateRange(days)
+
+    const data = kaloPost('/shop/queryList', {
+      country: 'BR',
+      ...range,
+      pageNo: page,
+      pageSize,
+      cateIds,
+      sort: [{ field: sortField, type: 'DESC' }],
+    })
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Product detail
 // ---------------------------------------------------------------------------
