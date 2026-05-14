@@ -11,8 +11,8 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
-const PORT = 3456
-const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
+const PORT = parseInt(process.env.PORT) || 4001
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -106,10 +106,11 @@ function kaloPost(path, body) {
     '--data-raw', JSON.stringify(body),
   ]
 
-  const result = execFileSync('curl', args, { encoding: 'utf-8', timeout: 35000 })
+  const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
   if (result.trimStart().startsWith('<')) {
     throw new Error('Cloudflare challenge — atualize os cookies (precisa do cf_clearance)')
   }
+  if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
 }
 
@@ -137,10 +138,11 @@ function kaloGet(path) {
     `https://www.kalodata.com${path}`,
   ]
 
-  const result = execFileSync('curl', args, { encoding: 'utf-8', timeout: 35000 })
+  const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
   if (result.trimStart().startsWith('<')) {
     throw new Error('Cloudflare challenge — atualize os cookies (precisa do cf_clearance)')
   }
+  if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
 }
 
@@ -173,7 +175,7 @@ function getKalowaveToken() {
         '-H', 'country: BR', '-H', 'language: pt-BR',
         'https://www.kalodata.com/api/sso/clip-token',
       ]
-      const ssoResult = JSON.parse(execFileSync('curl', ssoArgs, { encoding: 'utf-8', timeout: 20000 }))
+      const ssoResult = JSON.parse(execFileSync('/usr/local/bin/curl_chrome116', ssoArgs, { encoding: 'utf-8', timeout: 20000 }))
 
       if (ssoResult.success && ssoResult.data?.token) {
         // Step 2: Exchange SSO token for Kalowave access token
@@ -187,7 +189,7 @@ function getKalowaveToken() {
         oauthArgs.push('-d', JSON.stringify({ token: ssoResult.data.token }))
         oauthArgs.push('https://clip.kalowave.com/api/oauth2/kalo')
 
-        const oauthResult = JSON.parse(execFileSync('curl', oauthArgs, { encoding: 'utf-8', timeout: 20000 }))
+        const oauthResult = JSON.parse(execFileSync('/usr/local/bin/curl_chrome116', oauthArgs, { encoding: 'utf-8', timeout: 20000 }))
 
         if (oauthResult.success && oauthResult.data?.accessToken) {
           kalowaveCache = {
@@ -230,7 +232,8 @@ function kalowaveGet(path) {
 
   args.push(`https://clip.kalowave.com${path}`)
 
-  const result = execFileSync('curl', args, { encoding: 'utf-8', timeout: 35000 })
+  const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
 }
 
@@ -257,7 +260,8 @@ function kalowavePost(path, body) {
   args.push('-d', JSON.stringify(body))
   args.push(`https://clip.kalowave.com${path}`)
 
-  const result = execFileSync('curl', args, { encoding: 'utf-8', timeout: 35000 })
+  const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
 }
 
@@ -491,7 +495,7 @@ function proxyKaloCDN(cdnPath, cacheKey, res) {
   }
 
   try {
-    const result = execFileSync('curl', [
+    const result = execFileSync('/usr/local/bin/curl_chrome116', [
       '-s', '--max-time', '15', '-L',
       `https://img.kalocdn.com/${cdnPath}`,
     ], { timeout: 20000 })
@@ -1802,7 +1806,7 @@ app.get('/api/creator/:handle/avatar', (req, res) => {
       '-A', UA,
       `https://www.tiktok.com/@${handle}`,
     ]
-    const html = execFileSync('curl', args, { encoding: 'utf-8', timeout: 15000 })
+    const html = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 15000 })
 
     const data = {}
 
@@ -1908,7 +1912,7 @@ app.get('/api/creator/search/:handle', (req, res) => {
       '-A', UA,
       `https://www.tiktok.com/@${handle}`,
     ]
-    const html = execFileSync('curl', args, { encoding: 'utf-8', timeout: 15000 })
+    const html = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 15000 })
 
     const data = {}
 
