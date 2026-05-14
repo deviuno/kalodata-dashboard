@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 340px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f13;
+      color: #e0e0e0;
+      font-size: 13px;
+      padding: 14px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      letter-spacing: -0.01em;
+    }
+    .header small {
+      color: #666;
+      font-size: 11px;
+    }
+
+    .card {
+      background: #14141c;
+      border: 1px solid #2a2a35;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .card:last-child { margin-bottom: 0; }
+
+    .card-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .card-label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .card-label .name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .card-label .sub {
+      font-size: 11px;
+      color: #777;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .status .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+    }
+    .status.ok {
+      background: rgba(74,222,128,0.08);
+      color: #4ade80;
+      border: 1px solid rgba(74,222,128,0.25);
+    }
+    .status.ok .dot { background: #4ade80; }
+    .status.off {
+      background: rgba(239,68,68,0.08);
+      color: #f87171;
+      border: 1px solid rgba(239,68,68,0.25);
+    }
+    .status.off .dot { background: #f87171; }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      width: 100%;
+      padding: 9px;
+      border-radius: 7px;
+      border: 1px solid #6c5ce7;
+      background: rgba(108,92,231,0.12);
+      color: #a78bfa;
+      font-family: inherit;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 120ms, border-color 120ms, color 120ms, transform 120ms;
+    }
+    .btn:hover:not(:disabled) {
+      background: rgba(108,92,231,0.22);
+      transform: translateY(-1px);
+    }
+    .btn:disabled {
+      border-color: #2a2a35;
+      background: transparent;
+      color: #555;
+      cursor: not-allowed;
+    }
+    .btn.copied {
+      border-color: #4ade80;
+      color: #4ade80;
+      background: rgba(74,222,128,0.1);
+    }
+    .btn svg {
+      width: 14px; height: 14px;
+    }
+
+    .open-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: #6c5ce7;
+      text-decoration: none;
+      margin-top: 8px;
+      cursor: pointer;
+      background: none;
+      border: 0;
+      padding: 0;
+      font-family: inherit;
+    }
+    .open-link:hover { color: #a78bfa; text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Cookie Sync</h1>
+    <small>kalodata · kalowave</small>
+  </div>
+
+  <div class="card" data-domain="kalodata">
+    <div class="card-row">
+      <div class="card-label">
+        <span class="name">Kalodata</span>
+        <span class="sub" id="sub-kalodata">kalodata.com</span>
+      </div>
+      <span class="status off" id="status-kalodata">
+        <span class="dot"></span>
+        <span id="status-text-kalodata">Não logado</span>
+      </span>
+    </div>
+    <button class="btn" id="copy-kalodata" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+      <span>Copiar cookies</span>
+    </button>
+    <button class="open-link" data-open="https://www.kalodata.com">Abrir Kalodata ↗</button>
+  </div>
+
+  <div class="card" data-domain="kalowave">
+    <div class="card-row">
+      <div class="card-label">
+        <span class="name">Kalowave</span>
+        <span class="sub" id="sub-kalowave">clip.kalowave.com</span>
+      </div>
+      <span class="status off" id="status-kalowave">
+        <span class="dot"></span>
+        <span id="status-text-kalowave">Não logado</span>
+      </span>
+    </div>
+    <button class="btn" id="copy-kalowave" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+      <span>Copiar cookies</span>
+    </button>
+    <button class="open-link" data-open="https://clip.kalowave.com">Abrir Kalowave ↗</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

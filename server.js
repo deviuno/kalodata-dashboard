@@ -121,6 +121,10 @@ function kaloGet(path) {
 // ---------------------------------------------------------------------------
 let kalowaveCache = { token: '', expiresAt: 0 }
 
+function invalidateKalowaveCache() {
+  kalowaveCache = { token: '', expiresAt: 0 }
+}
+
 function getKalowaveToken() {
   // Use cache if valid (10 min margin)
   if (kalowaveCache.token && Date.now() < kalowaveCache.expiresAt - 600000) {
@@ -233,8 +237,15 @@ function kalowavePost(path, body) {
 // Date helpers
 // ---------------------------------------------------------------------------
 function getDateRange(days) {
-  // Use local date components (not toISOString → UTC) so the "yesterday" window
-  // matches the user's calendar day in America/Sao_Paulo, not UTC.
+  // Use local date components (not toISOString → UTC) so the window matches
+  // the user's calendar day in America/Sao_Paulo, not UTC.
+  //
+  // Janela: [hoje-2 - (days-1), hoje-2].
+  // O Kalodata fecha o agregado de cada dia só no dia seguinte (em UTC), então
+  // "ontem" (BRT) ainda pode estar com dados parciais. A própria UI da
+  // Kalodata pula pra D-2 — confirmado comparando: pra days=30 num "hoje"=14/05
+  // a fonte mostra 13/04 ~ 12/05, e antes daqui mandávamos 14/04 ~ 13/05 (off-by-one).
+  // Esse offset gerava ~R$4-6k de diferença em vídeos sensíveis ao último dia.
   const fmt = (d) => {
     const y = d.getFullYear()
     const m = String(d.getMonth() + 1).padStart(2, '0')
@@ -242,7 +253,7 @@ function getDateRange(days) {
     return `${y}-${m}-${dd}`
   }
   const end = new Date()
-  end.setDate(end.getDate() - 1)
+  end.setDate(end.getDate() - 2)
   const start = new Date(end)
   start.setDate(start.getDate() - (days - 1))
   return { startDate: fmt(start), endDate: fmt(end) }
@@ -1291,7 +1302,30 @@ app.put('/api/config', (req, res) => {
   const current = loadConfig()
   const updated = { ...current, ...req.body }
   writeFileSync('config.json', JSON.stringify(updated, null, 2), 'utf-8')
-  res.json({ success: true, message: 'Configuracao atualizada' })
+  const touchedKalowave =
+    Object.prototype.hasOwnProperty.call(req.body ?? {}, 'kalowave_cookies') ||
+    Object.prototype.hasOwnProperty.call(req.body ?? {}, 'kalowave_token')
+  if (touchedKalowave) invalidateKalowaveCache()
+  res.json({
+    success: true,
+    message: 'Configuracao atualizada',
+    kalowaveCacheInvalidated: touchedKalowave,
+  })
+})
+
+/**
+ * @swagger
+ * /api/kalowave/refresh:
+ *   post:
+ *     summary: Invalida o cache do access token Kalowave e forca novo SSO no proximo request
+ *     tags: [Config]
+ *     responses:
+ *       200:
+ *         description: Cache invalidado
+ */
+app.post('/api/kalowave/refresh', (_req, res) => {
+  invalidateKalowaveCache()
+  res.json({ success: true, message: 'Kalowave token cache invalidado' })
 })
 
 // ---------------------------------------------------------------------------
@@ -1362,9 +1396,34 @@ app.get('/api/health', (_req, res) => {
  *       500:
  *         description: Erro
  */
+// In-memory cache for insight endpoints. Upstream (clip.kalowave.com) pode
+// levar 30s+ pra responder script-analysis; transcript nunca muda por videoId,
+// e a URL expira só quando o CDN gira. TTLs: transcript 7d, url 30min.
+const INSIGHT_TRANSCRIPT_TTL = 7 * 24 * 60 * 60 * 1000
+const INSIGHT_URL_TTL = 30 * 60 * 1000
+const insightCache = new Map() // key → { data, expiresAt }
+
+function insightCacheGet(key) {
+  const entry = insightCache.get(key)
+  if (!entry) return null
+  if (Date.now() >= entry.expiresAt) {
+    insightCache.delete(key)
+    return null
+  }
+  return entry.data
+}
+
+function insightCacheSet(key, data, ttl) {
+  insightCache.set(key, { data, expiresAt: Date.now() + ttl })
+}
+
 app.get('/api/insight/:videoId/url', (req, res) => {
   try {
+    const key = `url:${req.params.videoId}`
+    const cached = insightCacheGet(key)
+    if (cached) return res.json(cached)
     const data = kalowaveGet(`/api/video/video-url?id=${req.params.videoId}&videoSource=Kalodata`)
+    if (data && data.success !== false) insightCacheSet(key, data, INSIGHT_URL_TTL)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1448,7 +1507,11 @@ app.post('/api/insight/:videoId/export', (req, res) => {
 app.get('/api/insight/:videoId/transcript', (req, res) => {
   try {
     const translate = req.query.translate === 'true'
+    const key = `transcript:${req.params.videoId}:${translate ? 'pt' : 'orig'}`
+    const cached = insightCacheGet(key)
+    if (cached) return res.json(cached)
     const data = kalowaveGet(`/api/video/script-analysis?id=${req.params.videoId}&videoSource=Kalodata&translate=${translate}&collectionId=`)
+    if (data && data.success !== false) insightCacheSet(key, data, INSIGHT_TRANSCRIPT_TTL)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Cookie Sync · Kalodata/Kalowave",
+  "version": "1.3",
+  "description": "1 clique pra copiar os cookies de Kalodata e Kalowave para a dashboard da API.",
+  "permissions": ["cookies", "tabs"],
+  "host_permissions": [
+    "https://*.kalodata.com/*",
+    "https://kalodata.com/*",
+    "https://*.kalowave.com/*",
+    "https://*.kaloclip.com/*"
+  ],
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "32": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    },
+    "default_title": "Cookie Sync · Domma"
+  }
+}
