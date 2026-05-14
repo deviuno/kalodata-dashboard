@@ -1,0 +1,61 @@
+# Sprint 0 / S0-1 — Deploy automático no servidor 187.127.0.217 a cada
+# push pra main. Substitui SSH manual.
+#
+# **Configuração necessária (uma vez)** nos repo settings:
+#   Settings → Secrets and variables → Actions → New repository secret
+#   - SSH_HOST: 187.127.0.217
+#   - SSH_USER: <usuário do servidor, ex: root>
+#   - SSH_KEY: <chave privada SSH (id_ed25519 inteiro com BEGIN/END)>
+#   - SSH_PATH: <caminho do projeto no servidor, ex: /root/kalodata-dashboard>
+#   - SSH_PORT: 22 (opcional, default 22)
+#
+# Depois disso, cada push pra main faz git pull + npm install + restart.
+
+name: Deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p ${{ secrets.SSH_PORT || 22 }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Pull, install, restart
+        run: |
+          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash <<'EOF'
+            set -e
+            cd ${{ secrets.SSH_PATH }}
+            echo "==> Pulling latest from main"
+            git fetch origin main
+            git reset --hard origin/main
+            echo "==> Installing dependencies (production-only)"
+            npm install --omit=dev --no-audit --no-fund
+            echo "==> Restarting service"
+            # Tenta pm2 primeiro (mais comum pra Node.js); fallback systemd.
+            if command -v pm2 >/dev/null 2>&1 && pm2 describe kalodata-dashboard >/dev/null 2>&1; then
+              pm2 restart kalodata-dashboard --update-env
+              pm2 save
+            elif systemctl list-unit-files | grep -q kalodata-dashboard; then
+              sudo systemctl restart kalodata-dashboard
+            else
+              echo "AVISO: nem pm2 nem systemd encontrados — startup manual ainda necessário."
+              exit 1
+            fi
+            echo "==> Verifying health"
+            sleep 2
+            curl -fsS http://localhost:5174/api/health || (echo "Health check falhou"; exit 1)
+            echo "==> Deploy OK"
+          EOF
