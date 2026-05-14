@@ -72,21 +72,13 @@
       font-weight: 600;
       letter-spacing: 0.02em;
     }
-    .status .dot {
-      width: 6px; height: 6px; border-radius: 50%;
-    }
-    .status.ok {
-      background: rgba(74,222,128,0.08);
-      color: #4ade80;
-      border: 1px solid rgba(74,222,128,0.25);
-    }
+    .status .dot { width: 6px; height: 6px; border-radius: 50%; }
+    .status.ok { background: rgba(74,222,128,0.08); color: #4ade80; border: 1px solid rgba(74,222,128,0.25); }
     .status.ok .dot { background: #4ade80; }
-    .status.off {
-      background: rgba(239,68,68,0.08);
-      color: #f87171;
-      border: 1px solid rgba(239,68,68,0.25);
-    }
+    .status.off { background: rgba(239,68,68,0.08); color: #f87171; border: 1px solid rgba(239,68,68,0.25); }
     .status.off .dot { background: #f87171; }
+    .status.pending { background: rgba(245,158,11,0.08); color: #fbbf24; border: 1px solid rgba(245,158,11,0.25); }
+    .status.pending .dot { background: #fbbf24; }
 
     .btn {
       display: flex;
@@ -105,24 +97,17 @@
       cursor: pointer;
       transition: background 120ms, border-color 120ms, color 120ms, transform 120ms;
     }
-    .btn:hover:not(:disabled) {
-      background: rgba(108,92,231,0.22);
-      transform: translateY(-1px);
-    }
-    .btn:disabled {
+    .btn:hover:not(:disabled) { background: rgba(108,92,231,0.22); transform: translateY(-1px); }
+    .btn:disabled { border-color: #2a2a35; background: transparent; color: #555; cursor: not-allowed; }
+    .btn.success { border-color: #4ade80; color: #4ade80; background: rgba(74,222,128,0.1); }
+    .btn.error { border-color: #f87171; color: #f87171; background: rgba(239,68,68,0.1); }
+    .btn svg { width: 14px; height: 14px; }
+    .btn.secondary {
       border-color: #2a2a35;
       background: transparent;
-      color: #555;
-      cursor: not-allowed;
+      color: #aaa;
     }
-    .btn.copied {
-      border-color: #4ade80;
-      color: #4ade80;
-      background: rgba(74,222,128,0.1);
-    }
-    .btn svg {
-      width: 14px; height: 14px;
-    }
+    .btn.secondary:hover:not(:disabled) { background: #1a1a22; color: #fff; }
 
     .open-link {
       display: inline-flex;
@@ -139,12 +124,107 @@
       font-family: inherit;
     }
     .open-link:hover { color: #a78bfa; text-decoration: underline; }
+
+    /* Settings/toggle */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-top: 1px solid #2a2a35;
+      margin-top: 10px;
+    }
+    .toggle-row .label {
+      font-size: 12px;
+      color: #ccc;
+    }
+    .toggle-row .label small {
+      display: block;
+      color: #666;
+      font-size: 10.5px;
+      margin-top: 2px;
+    }
+    .switch {
+      position: relative;
+      width: 36px;
+      height: 20px;
+      background: #2a2a35;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 180ms;
+      flex: 0 0 auto;
+    }
+    .switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 180ms;
+    }
+    .switch.on { background: #6c5ce7; }
+    .switch.on::after { transform: translateX(16px); }
+
+    .config-section {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 240ms;
+    }
+    .config-section.open { max-height: 220px; }
+
+    .config-section input {
+      width: 100%;
+      padding: 7px 9px;
+      border-radius: 6px;
+      border: 1px solid #2a2a35;
+      background: #0a0a10;
+      color: #e0e0e0;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 11px;
+      margin-top: 6px;
+      outline: none;
+    }
+    .config-section input:focus { border-color: #6c5ce7; }
+    .config-section label {
+      display: block;
+      font-size: 11px;
+      color: #888;
+      margin-top: 10px;
+      letter-spacing: 0.02em;
+    }
+    .config-section label:first-child { margin-top: 0; }
+
+    .toggle-config {
+      width: 100%;
+      text-align: left;
+      padding: 8px 0;
+      background: none;
+      border: 0;
+      color: #777;
+      font-family: inherit;
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+    .toggle-config:hover { color: #aaa; }
+
+    .last-sync {
+      font-size: 10.5px;
+      color: #666;
+      margin-top: 8px;
+      text-align: center;
+      letter-spacing: 0.02em;
+    }
+    .last-sync.ok { color: #4ade80; }
+    .last-sync.fail { color: #f87171; }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>Cookie Sync</h1>
-    <small>kalodata · kalowave</small>
+    <small>Domma · kalodata</small>
   </div>
 
   <div class="card" data-domain="kalodata">
@@ -158,35 +238,42 @@
         <span id="status-text-kalodata">Não logado</span>
       </span>
     </div>
-    <button class="btn" id="copy-kalodata" disabled>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-      </svg>
-      <span>Copiar cookies</span>
-    </button>
-    <button class="open-link" data-open="https://www.kalodata.com">Abrir Kalodata ↗</button>
-  </div>
 
-  <div class="card" data-domain="kalowave">
-    <div class="card-row">
-      <div class="card-label">
-        <span class="name">Kalowave</span>
-        <span class="sub" id="sub-kalowave">clip.kalowave.com</span>
-      </div>
-      <span class="status off" id="status-kalowave">
-        <span class="dot"></span>
-        <span id="status-text-kalowave">Não logado</span>
-      </span>
-    </div>
-    <button class="btn" id="copy-kalowave" disabled>
+    <button class="btn" id="send-kalodata" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 2L11 13"></path>
+        <path d="M22 2l-7 20-4-9-9-4z"></path>
+      </svg>
+      <span>Enviar pro servidor</span>
+    </button>
+
+    <button class="btn secondary" id="copy-kalodata" disabled style="margin-top:6px;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
       </svg>
-      <span>Copiar cookies</span>
+      <span>Copiar pro clipboard</span>
     </button>
-    <button class="open-link" data-open="https://clip.kalowave.com">Abrir Kalowave ↗</button>
+
+    <button class="open-link" data-open="https://www.kalodata.com">Abrir Kalodata ↗</button>
+
+    <div class="toggle-row">
+      <div class="label">
+        Auto-sync
+        <small>Envia cookies a cada 15 min</small>
+      </div>
+      <div class="switch" id="auto-sync"></div>
+    </div>
+
+    <p class="last-sync" id="last-sync">—</p>
+
+    <button class="toggle-config" id="toggle-config">⚙ Configurações</button>
+    <div class="config-section" id="config-section">
+      <label>URL do servidor</label>
+      <input type="text" id="server-url" placeholder="http://187.127.0.217:3456" />
+      <label>Admin key</label>
+      <input type="password" id="admin-key" placeholder="x-admin-key" />
+    </div>
   </div>
 
   <script src="popup.js"></script>

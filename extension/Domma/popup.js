@@ -1,7 +1,9 @@
-// Estratégia (padrão anterior — compatível com o textarea da dashboard):
-// Ambos os cards copiam a string "name=value; name=value" dos cookies do
-// domínio correspondente. A dashboard usa esses cookies pra manter o flow
-// Kalodata → SSO → Kalowave JWT funcionando sem intervenção.
+// Cookie Sync extension — v2.0
+// Funcionalidades:
+//   1. Copia cookies pra clipboard (fallback manual)
+//   2. ENVIA cookies direto pro endpoint /api/cookies do servidor (1 clique)
+//   3. Auto-sync a cada 15 min via chrome.alarms (background.js)
+//   4. Settings persistidos em chrome.storage.local
 
 const CF_COOKIE_PREFIXES = ['__cf', 'cf_', 'cfruid', '_cfuvid'];
 
@@ -13,18 +15,9 @@ const DOMAINS = {
     sessionCookies: ['SESSION'],
     openUrl: 'https://www.kalodata.com',
   },
-  kalowave: {
-    label: 'clip.kalowave.com',
-    urls: ['https://clip.kalowave.com', 'https://www.kaloclip.com', 'https://kaloclip.com'],
-    domains: ['kalowave.com', 'kaloclip.com'],
-    // Kalowave autentica por JWT em localStorage, mas a dashboard espera
-    // a string de cookies pra passar pelo flow de auto-refresh SSO.
-    sessionCookies: [],
-    openUrl: 'https://clip.kalowave.com',
-  },
 };
 
-const payload = { kalodata: '', kalowave: '' };
+const payload = { kalodata: '' };
 
 function isCloudflareCookie(name) {
   return CF_COOKIE_PREFIXES.some((p) => name.startsWith(p));
@@ -52,15 +45,13 @@ async function loadCard(key) {
   const subEl = document.getElementById(`sub-${key}`);
   const statusEl = document.getElementById(`status-${key}`);
   const statusText = document.getElementById(`status-text-${key}`);
-  const btn = document.getElementById(`copy-${key}`);
-  const btnSpan = btn.querySelector('span');
+  const sendBtn = document.getElementById(`send-${key}`);
+  const copyBtn = document.getElementById(`copy-${key}`);
 
   const cookies = await collectCookies(def);
   const nonCfCount = cookies.filter((c) => !isCloudflareCookie(c.name)).length;
   const hasSession = def.sessionCookies.length > 0
     && cookies.some((c) => def.sessionCookies.includes(c.name));
-  // Considera "logado" se tiver um cookie de sessão conhecido OU qualquer
-  // cookie não-Cloudflare (o Kalowave não tem nome fixo de sessão).
   const logged = hasSession || nonCfCount > 0;
   const str = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
 
@@ -72,9 +63,85 @@ async function loadCard(key) {
     : `${def.label} · ${cookies.length} cookie${cookies.length > 1 ? 's' : ''}`;
 
   payload[key] = str;
-  btn.disabled = cookies.length === 0;
-  btn.classList.remove('copied');
-  btnSpan.textContent = cookies.length > 0 ? 'Copiar cookies' : 'Faça login primeiro';
+  sendBtn.disabled = cookies.length === 0;
+  copyBtn.disabled = cookies.length === 0;
+}
+
+async function getConfig() {
+  return chrome.storage.local.get(['serverUrl', 'adminKey', 'autoSync']);
+}
+
+async function sendToServer(key) {
+  const sendBtn = document.getElementById(`send-${key}`);
+  const span = sendBtn.querySelector('span');
+  const str = payload[key];
+  if (!str) return;
+
+  const cfg = await getConfig();
+  if (!cfg.serverUrl || !cfg.adminKey) {
+    sendBtn.classList.add('error');
+    span.textContent = 'Configura URL + admin key';
+    document.getElementById('config-section').classList.add('open');
+    setTimeout(() => {
+      sendBtn.classList.remove('error');
+      span.textContent = 'Enviar pro servidor';
+    }, 2400);
+    return;
+  }
+
+  sendBtn.disabled = true;
+  span.textContent = 'Enviando...';
+
+  try {
+    const r = await fetch(`${cfg.serverUrl.replace(/\/$/, '')}/api/cookies`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-key': cfg.adminKey,
+      },
+      body: JSON.stringify({ cookies: str }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.success) {
+      sendBtn.classList.add('success');
+      span.textContent = j.sessionValid ? '✓ Sessão válida' : '⚠ Aceito mas sessão inválida';
+      await chrome.storage.local.set({
+        lastSyncAt: Date.now(),
+        lastSyncStatus: 'ok',
+        lastSyncError: null,
+        lastSessionValid: !!j.sessionValid,
+      });
+      renderLastSync();
+    } else {
+      sendBtn.classList.add('error');
+      span.textContent = `Falha: ${j.message ?? r.status}`;
+      await chrome.storage.local.set({
+        lastSyncAt: Date.now(),
+        lastSyncStatus: 'fail',
+        lastSyncError: j.message ?? `HTTP ${r.status}`,
+      });
+      renderLastSync();
+    }
+  } catch (e) {
+    sendBtn.classList.add('error');
+    span.textContent = 'Erro de rede';
+    await chrome.storage.local.set({
+      lastSyncAt: Date.now(),
+      lastSyncStatus: 'fail',
+      lastSyncError: e?.message ?? 'Erro de rede',
+    });
+    renderLastSync();
+  }
+
+  setTimeout(() => {
+    sendBtn.classList.remove('success', 'error');
+    sendBtn.disabled = false;
+    span.textContent = 'Enviar pro servidor';
+  }, 2400);
+}
+
+function wireSend(key) {
+  document.getElementById(`send-${key}`).addEventListener('click', () => sendToServer(key));
 }
 
 function wireCopy(key) {
@@ -92,11 +159,12 @@ function wireCopy(key) {
       document.execCommand('copy');
       ta.remove();
     }
-    btn.classList.add('copied');
-    btn.querySelector('span').textContent = 'Copiado!';
+    const span = btn.querySelector('span');
+    btn.classList.add('success');
+    span.textContent = 'Copiado!';
     setTimeout(() => {
-      btn.classList.remove('copied');
-      btn.querySelector('span').textContent = 'Copiar cookies';
+      btn.classList.remove('success');
+      span.textContent = 'Copiar pro clipboard';
     }, 1600);
   });
 }
@@ -110,9 +178,63 @@ function wireOpenLinks() {
   });
 }
 
-wireCopy('kalodata');
-wireCopy('kalowave');
-wireOpenLinks();
+async function renderLastSync() {
+  const el = document.getElementById('last-sync');
+  const cfg = await chrome.storage.local.get(['lastSyncAt', 'lastSyncStatus', 'lastSyncError', 'lastSessionValid']);
+  if (!cfg.lastSyncAt) {
+    el.textContent = 'Nunca sincronizado';
+    el.classList.remove('ok', 'fail');
+    return;
+  }
+  const diffMin = Math.floor((Date.now() - cfg.lastSyncAt) / 60000);
+  const when = diffMin < 1 ? 'agora' : diffMin < 60 ? `há ${diffMin} min` : `há ${Math.floor(diffMin / 60)}h`;
+  if (cfg.lastSyncStatus === 'ok') {
+    el.textContent = `Última sync: ${when} · ${cfg.lastSessionValid ? 'sessão válida' : 'sessão pendente'}`;
+    el.classList.add('ok');
+    el.classList.remove('fail');
+  } else {
+    el.textContent = `Última sync: ${when} · falhou (${cfg.lastSyncError ?? 'erro'})`;
+    el.classList.add('fail');
+    el.classList.remove('ok');
+  }
+}
 
+async function wireAutoSync() {
+  const switchEl = document.getElementById('auto-sync');
+  const cfg = await getConfig();
+  if (cfg.autoSync) switchEl.classList.add('on');
+  switchEl.addEventListener('click', async () => {
+    const now = await chrome.storage.local.get(['autoSync']);
+    const next = !now.autoSync;
+    await chrome.storage.local.set({ autoSync: next });
+    switchEl.classList.toggle('on', next);
+    chrome.runtime.sendMessage({ type: 'reschedule' });
+  });
+}
+
+async function wireConfig() {
+  const toggle = document.getElementById('toggle-config');
+  const section = document.getElementById('config-section');
+  const urlInput = document.getElementById('server-url');
+  const keyInput = document.getElementById('admin-key');
+
+  const cfg = await getConfig();
+  urlInput.value = cfg.serverUrl ?? '';
+  keyInput.value = cfg.adminKey ?? '';
+
+  toggle.addEventListener('click', () => section.classList.toggle('open'));
+  urlInput.addEventListener('change', async () => {
+    await chrome.storage.local.set({ serverUrl: urlInput.value.trim() });
+  });
+  keyInput.addEventListener('change', async () => {
+    await chrome.storage.local.set({ adminKey: keyInput.value.trim() });
+  });
+}
+
+wireSend('kalodata');
+wireCopy('kalodata');
+wireOpenLinks();
+wireAutoSync();
+wireConfig();
 loadCard('kalodata');
-loadCard('kalowave');
+renderLastSync();

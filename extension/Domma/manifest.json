@@ -1,20 +1,27 @@
 {
   "manifest_version": 3,
   "name": "Cookie Sync · Kalodata/Kalowave",
-  "version": "1.3",
-  "description": "1 clique pra copiar os cookies de Kalodata e Kalowave para a dashboard da API.",
-  "permissions": ["cookies", "tabs"],
+  "version": "2.0",
+  "description": "Sincroniza cookies de Kalodata/Kalowave direto com a dashboard da API. Modo manual ou auto a cada 15 min.",
+  "permissions": ["cookies", "tabs", "storage", "alarms"],
   "host_permissions": [
     "https://*.kalodata.com/*",
     "https://kalodata.com/*",
     "https://*.kalowave.com/*",
-    "https://*.kaloclip.com/*"
+    "https://*.kaloclip.com/*",
+    "http://187.127.0.217:3456/*",
+    "http://187.127.0.217:5174/*",
+    "http://*/api/cookies",
+    "https://*/api/cookies"
   ],
   "icons": {
     "16": "icon.png",
     "32": "icon.png",
     "48": "icon.png",
     "128": "icon.png"
+  },
+  "background": {
+    "service_worker": "background.js"
   },
   "action": {
     "default_popup": "popup.html",
