@@ -37,25 +37,42 @@ jobs:
         run: |
           ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash <<'EOF'
             set -e
+            # Sessão SSH do GitHub Actions é não-interativa e não carrega o
+            # ~/.bashrc/.profile, então PATH não tem o pm2 do nvm. Carregamos
+            # o nvm explicitamente e exportamos o bin do node ativo no PATH
+            # antes de qualquer comando que dependa de pm2/npm.
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            if [ -d "$NVM_DIR/versions/node" ]; then
+              # Pega a versão de node ativa (default ou primeira disponível)
+              NODE_BIN=$(ls -d $NVM_DIR/versions/node/*/bin 2>/dev/null | head -1)
+              [ -n "$NODE_BIN" ] && export PATH="$NODE_BIN:$PATH"
+            fi
+            echo "==> Using node: $(which node 2>/dev/null || echo 'NOT FOUND')"
+            echo "==> Using pm2:  $(which pm2 2>/dev/null  || echo 'NOT FOUND')"
+
             cd ${{ secrets.SSH_PATH }}
             echo "==> Pulling latest from main"
             git fetch origin main
             git reset --hard origin/main
             echo "==> Installing dependencies (production-only)"
             npm install --omit=dev --no-audit --no-fund
+
             echo "==> Restarting service"
-            # Tenta pm2 primeiro (mais comum pra Node.js); fallback systemd.
-            if command -v pm2 >/dev/null 2>&1 && pm2 describe kalodata-dashboard >/dev/null 2>&1; then
-              pm2 restart kalodata-dashboard --update-env
+            # Process name real do servidor é `kalodata-scraper` (não dashboard).
+            # Tenta pm2 primeiro; fallback systemd.
+            if command -v pm2 >/dev/null 2>&1 && pm2 describe kalodata-scraper >/dev/null 2>&1; then
+              pm2 restart kalodata-scraper --update-env
               pm2 save
-            elif systemctl list-unit-files | grep -q kalodata-dashboard; then
-              sudo systemctl restart kalodata-dashboard
+            elif systemctl list-unit-files | grep -q kalodata-scraper; then
+              sudo systemctl restart kalodata-scraper
             else
               echo "AVISO: nem pm2 nem systemd encontrados — startup manual ainda necessário."
               exit 1
             fi
-            echo "==> Verifying health"
+
+            echo "==> Verifying health (port 4001)"
             sleep 2
-            curl -fsS http://localhost:5174/api/health || (echo "Health check falhou"; exit 1)
+            curl -fsS http://localhost:4001/api/health || (echo "Health check falhou"; exit 1)
             echo "==> Deploy OK"
           EOF
