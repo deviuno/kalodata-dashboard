@@ -24,7 +24,10 @@ function loadConfig() {
     email_to: '',
     cookie_check_cron: '0 */6 * * *', // every 6 hours
     kalowave_token: '',
-    kalowave_cookies: ''
+    kalowave_cookies: '',
+    // Quando definido, endpoints administrativos exigem header `x-admin-key` igual.
+    // Vazio = gate desabilitado (modo dev). Em produção, setar via config.json.
+    admin_key: process.env.ADMIN_KEY || ''
   }
   try {
     const raw = readFileSync('config.json', 'utf-8')
@@ -32,6 +35,31 @@ function loadConfig() {
   } catch {
     return defaults
   }
+}
+
+// ---------------------------------------------------------------------------
+// Admin gate (x-admin-key)
+// ---------------------------------------------------------------------------
+// Middleware que protege endpoints administrativos. Quando `admin_key` está
+// vazio no config, deixa passar com warning (modo dev). Quando está setado,
+// exige header `x-admin-key` exato. Sem isso, qualquer um que descobrir o IP
+// do intermediário consegue ler/escrever cookies, config, e disparar alerts.
+let warnedAdminKeyMissing = false
+function requireAdminKey(req, res, next) {
+  const cfg = loadConfig()
+  const expected = (cfg.admin_key || '').trim()
+  if (!expected) {
+    if (!warnedAdminKeyMissing) {
+      console.warn('[ADMIN] admin_key vazio no config — endpoints administrativos sem gate. Setar em produção.')
+      warnedAdminKeyMissing = true
+    }
+    return next()
+  }
+  const got = (req.headers['x-admin-key'] || '').trim()
+  if (got !== expected) {
+    return res.status(401).json({ success: false, message: 'Não autorizado (x-admin-key ausente ou incorreto)' })
+  }
+  return next()
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,7 +1135,7 @@ app.get('/api/creator/:id/total', (req, res) => {
  *                   type: string
  *                   format: date-time
  */
-app.get('/api/session', (_req, res) => {
+app.get('/api/session', requireAdminKey, (_req, res) => {
   const hasCookies = !!getCookies()
   const valid = hasCookies ? checkSession() : false
   res.json({ valid, hasCookies, checkedAt: new Date().toISOString() })
@@ -1135,7 +1163,7 @@ app.get('/api/session', (_req, res) => {
  *                   type: string
  *                   description: Primeiros 50 chars (mascarado)
  */
-app.get('/api/cookies', (_req, res) => {
+app.get('/api/cookies', requireAdminKey, (_req, res) => {
   const cookies = getCookies()
   res.json({
     exists: !!cookies,
@@ -1176,7 +1204,7 @@ app.get('/api/cookies', (_req, res) => {
  *       400:
  *         description: Cookie string ausente
  */
-app.put('/api/cookies', (req, res) => {
+app.put('/api/cookies', requireAdminKey, (req, res) => {
   const { cookies } = req.body || {}
   if (!cookies || typeof cookies !== 'string' || !cookies.trim()) {
     return res.status(400).json({ success: false, message: 'Campo "cookies" e obrigatorio (string nao vazia)' })
@@ -1202,7 +1230,7 @@ app.put('/api/cookies', (req, res) => {
  *       500:
  *         description: Falha ao enviar email
  */
-app.post('/api/alerts/test', async (_req, res) => {
+app.post('/api/alerts/test', requireAdminKey, async (_req, res) => {
   try {
     const sent = await sendCookieExpiredAlert()
     res.json({ success: true, sent, message: sent ? 'Email enviado' : 'Email nao enviado (nao configurado ou enviado recentemente)' })
@@ -1257,7 +1285,7 @@ app.post('/api/alerts/check', async (_req, res) => {
  *       200:
  *         description: Configuracao do sistema
  */
-app.get('/api/config', (_req, res) => {
+app.get('/api/config', requireAdminKey, (_req, res) => {
   const cfg = loadConfig()
   // Mask sensitive fields
   const masked = {
@@ -1298,7 +1326,7 @@ app.get('/api/config', (_req, res) => {
  *       200:
  *         description: Configuracao atualizada
  */
-app.put('/api/config', (req, res) => {
+app.put('/api/config', requireAdminKey, (req, res) => {
   const current = loadConfig()
   const updated = { ...current, ...req.body }
   writeFileSync('config.json', JSON.stringify(updated, null, 2), 'utf-8')
@@ -1323,7 +1351,7 @@ app.put('/api/config', (req, res) => {
  *       200:
  *         description: Cache invalidado
  */
-app.post('/api/kalowave/refresh', (_req, res) => {
+app.post('/api/kalowave/refresh', requireAdminKey, (_req, res) => {
   invalidateKalowaveCache()
   res.json({ success: true, message: 'Kalowave token cache invalidado' })
 })
