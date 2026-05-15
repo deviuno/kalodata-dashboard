@@ -899,8 +899,13 @@ function shopOverviewBody(id, country, range, extra = {}) {
  * videos, lives, new-products). NÃO inclui currency/region — Kalodata
  * rejeita com `code: 501 "Invalid Parameter"` se enviar esses campos
  * nesses endpoints (confirmado empiricamente em 2026-05-15).
+ *
+ * Kalodata também rejeita pageSize < 10 nesses endpoints. Clampa pro
+ * mínimo 10 (defensivo — frontend já usa 10/20).
  */
 function shopListBody(id, range, extra = {}) {
+  const clamped = { ...extra }
+  if (clamped.pageSize != null && clamped.pageSize < 10) clamped.pageSize = 10
   return {
     id,
     ...range,
@@ -909,7 +914,7 @@ function shopListBody(id, range, extra = {}) {
     pageNo: 1,
     pageSize: 10,
     sort: [{ field: 'revenue', type: 'DESC' }],
-    ...extra,
+    ...clamped,
   }
 }
 
