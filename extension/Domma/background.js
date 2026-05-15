@@ -1,8 +1,15 @@
 // Service worker: dispara sync periódico de cookies enquanto auto-sync
-// estiver ligado. O ciclo de 15 min cobre folga do TTL do cf_clearance
-// (~30-60 min) — sempre haverá um cookie fresh no servidor.
+// estiver ligado. v2.1 (2026-05-15): ciclo reduzido de 15 → 5 min porque
+// observamos sessões expirando em ~10min (provavelmente rate-limit acumulado
+// pelo monitor + crons multi-país pingando /user/features). Além do polling
+// timed, escutamos chrome.cookies.onChanged pra sincronizar IMEDIATAMENTE
+// sempre que o user navega no Kalodata e os cookies de auth são renovados —
+// elimina o gap entre expiração e próximo poll.
 
 const ALARM_NAME = 'kalodata-cookie-sync';
+const SYNC_INTERVAL_MIN = 5;
+// Cookies que indicam renovação da sessão Kalodata (não os do Cloudflare).
+const SESSION_COOKIE_HINTS = ['SESSION', 'sessionid', 'kalo_token', 'token'];
 
 const DOMAINS = {
   kalodata: {
@@ -86,13 +93,34 @@ async function rescheduleAlarm() {
   await chrome.alarms.clear(ALARM_NAME);
   const { autoSync } = await chrome.storage.local.get(['autoSync']);
   if (autoSync) {
-    chrome.alarms.create(ALARM_NAME, { periodInMinutes: 15 });
+    chrome.alarms.create(ALARM_NAME, { periodInMinutes: SYNC_INTERVAL_MIN });
     syncOnce(); // sync imediato ao ligar
   }
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) syncOnce();
+});
+
+// Sync IMEDIATO quando cookies de sessão da Kalodata mudam — fechamento
+// completo do gap entre expiração (~10min) e próximo poll (5min). Quando o
+// user simplesmente navega no Kalodata, os cookies renovam automaticamente
+// e a extensão captura na hora. Debounce de 2s pra evitar storm em refresh.
+let cookieDebounceTimer = null;
+chrome.cookies.onChanged.addListener((changeInfo) => {
+  const c = changeInfo.cookie;
+  if (!c?.domain || !c.domain.includes('kalodata.com')) return;
+  // Ignora cookies do Cloudflare (mudam toda hora) — só liga em cookies
+  // de sessão de aplicação que indicam login renovado.
+  const isSession = SESSION_COOKIE_HINTS.some((h) => c.name.toLowerCase().includes(h.toLowerCase()));
+  if (!isSession) return;
+
+  if (cookieDebounceTimer) clearTimeout(cookieDebounceTimer);
+  cookieDebounceTimer = setTimeout(() => {
+    chrome.storage.local.get(['autoSync']).then(({ autoSync }) => {
+      if (autoSync) syncOnce();
+    });
+  }, 2000);
 });
 
 // Trigger manual via popup

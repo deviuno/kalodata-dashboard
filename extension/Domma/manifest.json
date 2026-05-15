@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Cookie Sync · Kalodata/Kalowave",
-  "version": "2.0",
-  "description": "Sincroniza cookies de Kalodata/Kalowave direto com a dashboard da API. Modo manual ou auto a cada 15 min.",
+  "version": "2.1",
+  "description": "Sincroniza cookies de Kalodata/Kalowave direto com a dashboard da API. Auto-sync a cada 5min + sync imediato em mudança de cookie de sessão.",
   "permissions": ["cookies", "tabs", "storage", "alarms"],
   "host_permissions": [
     "https://*.kalodata.com/*",
