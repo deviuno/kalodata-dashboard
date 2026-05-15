@@ -1,15 +1,26 @@
 // Service worker: dispara sync periódico de cookies enquanto auto-sync
-// estiver ligado. v2.1 (2026-05-15): ciclo reduzido de 15 → 5 min porque
-// observamos sessões expirando em ~10min (provavelmente rate-limit acumulado
-// pelo monitor + crons multi-país pingando /user/features). Além do polling
-// timed, escutamos chrome.cookies.onChanged pra sincronizar IMEDIATAMENTE
-// sempre que o user navega no Kalodata e os cookies de auth são renovados —
-// elimina o gap entre expiração e próximo poll.
+// estiver ligado.
+//
+// v2.1 (2026-05-15): ciclo reduzido de 15 → 5 min + listener de
+// chrome.cookies.onChanged pra sync imediato.
+//
+// v2.2 (2026-05-15): PING ATIVO antes de coletar cookies. Antes do
+// chrome.cookies.getAll, faz fetch silencioso pra
+// kalodata.com/user/features. Esse request usa os cookies do browser e,
+// se forem renováveis (refresh token ainda válido), o servidor responde
+// com Set-Cookie atualizando a sessão. Sem isso, a extensão capturava
+// cookies já expirados — e o sync mandava lixo pro servidor.
+//
+// Funciona MESMO sem aba Kalodata aberta porque o service worker tem
+// permissão `host_permissions` pra kalodata.com.
 
 const ALARM_NAME = 'kalodata-cookie-sync';
 const SYNC_INTERVAL_MIN = 5;
 // Cookies que indicam renovação da sessão Kalodata (não os do Cloudflare).
 const SESSION_COOKIE_HINTS = ['SESSION', 'sessionid', 'kalo_token', 'token'];
+// Endpoint barato no Kalodata pra "tocar" a sessão e forçar Set-Cookie.
+// /user/features é chamada normal da UI — não dispara analytics, é leve.
+const KALODATA_PING_URL = 'https://www.kalodata.com/user/features';
 
 const DOMAINS = {
   kalodata: {
@@ -35,10 +46,45 @@ async function collectCookies(def) {
   return Array.from(seen.values());
 }
 
+/**
+ * Faz POST silencioso pra /user/features no Kalodata. O browser anexa os
+ * cookies automaticamente; se a sessão estiver renovável, o servidor
+ * responde Set-Cookie e o ttl reseta. Se cookies já estão totalmente
+ * expirados/revogados, retorna 401 (logamos mas seguimos — o sync abaixo
+ * vai mandar o que tiver e o servidor reporta sessionValid=false).
+ *
+ * Aguarda no máx 8s. Falha silenciosa — não impede o sync de cookies.
+ */
+async function pingKalodata() {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    await fetch(KALODATA_PING_URL, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/json',
+        'country': 'BR',
+        'currency': 'BRL',
+        'language': 'pt-BR',
+      },
+      body: JSON.stringify({ country: 'BR', list: ['PRODUCT.LIST'] }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+  } catch (_) {
+    // Sem rede / timeout / CORS — segue sem reclamar
+  }
+}
+
 async function syncOnce() {
   const cfg = await chrome.storage.local.get(['serverUrl', 'adminKey', 'autoSync', 'lastSyncAt', 'lastSyncStatus']);
   if (!cfg.autoSync || !cfg.serverUrl || !cfg.adminKey) return;
 
+  // 1. Ping ativo: força Kalodata a renovar Set-Cookie ANTES de coletarmos.
+  await pingKalodata();
+
+  // 2. Coleta cookies (agora frescos, se ping funcionou).
   const cookies = await collectCookies(DOMAINS.kalodata);
   if (cookies.length === 0) {
     await chrome.storage.local.set({
