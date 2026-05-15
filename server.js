@@ -879,11 +879,10 @@ app.get('/api/shops', (req, res) => {
 // videoType+creatorNickName (videos).
 
 /**
- * Helper: monta o payload base que TODOS os endpoints de shop detail compartilham.
- * Inclui currency + region derivados do country (Kalodata aceita ambos no body
- * além dos headers — manter consistente com o que a UI envia).
+ * Helper: payload pros endpoints de overview (/total, /detail, /history).
+ * INCLUI currency + region (esses 3 endpoints exigem; sem eles dá Invalid Parameter).
  */
-function shopDetailBody(id, country, range, extra = {}) {
+function shopOverviewBody(id, country, range, extra = {}) {
   const cfg = COUNTRY_CONFIG[country] || COUNTRY_CONFIG.BR
   return {
     id,
@@ -891,6 +890,25 @@ function shopDetailBody(id, country, range, extra = {}) {
     cateIds: [],
     currency: cfg.currency,
     region: cfg.country,
+    ...extra,
+  }
+}
+
+/**
+ * Helper: payload pros endpoints de listagem paginada (creators, products,
+ * videos, lives, new-products). NÃO inclui currency/region — Kalodata
+ * rejeita com `code: 501 "Invalid Parameter"` se enviar esses campos
+ * nesses endpoints (confirmado empiricamente em 2026-05-15).
+ */
+function shopListBody(id, range, extra = {}) {
+  return {
+    id,
+    ...range,
+    cateIds: [],
+    authority: true,
+    pageNo: 1,
+    pageSize: 10,
+    sort: [{ field: 'revenue', type: 'DESC' }],
     ...extra,
   }
 }
@@ -908,7 +926,7 @@ app.get('/api/shop/:id/total', (req, res) => {
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
-    const data = kaloPost('/shop/detail/total', shopDetailBody(id, country, range), country)
+    const data = kaloPost('/shop/detail/total', shopOverviewBody(id, country, range), country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -928,7 +946,7 @@ app.get('/api/shop/:id/info', (req, res) => {
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
-    const data = kaloPost('/shop/detail', shopDetailBody(id, country, range), country)
+    const data = kaloPost('/shop/detail', shopOverviewBody(id, country, range), country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -952,8 +970,7 @@ app.get('/api/shop/:id/creators', (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/detail/searchCooperativeCreators', shopDetailBody(id, country, range, {
-      authority: true,
+    const data = kaloPost('/shop/detail/searchCooperativeCreators', shopListBody(id, range, {
       pageNo: page,
       pageSize,
       sort: [{ field: sortField, type: 'DESC' }],
@@ -982,8 +999,7 @@ app.get('/api/shop/:id/products', (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/detail/product/queryList', shopDetailBody(id, country, range, {
-      authority: true,
+    const data = kaloPost('/shop/detail/product/queryList', shopListBody(id, range, {
       pageNo: page,
       pageSize,
       sort: [{ field: sortField, type: 'DESC' }],
@@ -1012,8 +1028,7 @@ app.get('/api/shop/:id/videos', (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/detail/searchVideos', shopDetailBody(id, country, range, {
-      authority: true,
+    const data = kaloPost('/shop/detail/searchVideos', shopListBody(id, range, {
       pageNo: page,
       pageSize,
       sort: [{ field: sortField, type: 'DESC' }],
@@ -1043,8 +1058,7 @@ app.get('/api/shop/:id/lives', (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/detail/searchLives', shopDetailBody(id, country, range, {
-      authority: true,
+    const data = kaloPost('/shop/detail/searchLives', shopListBody(id, range, {
       pageNo: page,
       pageSize,
       sort: [{ field: sortField, type: 'DESC' }],
@@ -1072,8 +1086,7 @@ app.get('/api/shop/:id/new-products', (req, res) => {
     const pageSize = parseInt(req.query.pageSize) || 10
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/detail/searchNewProducts', shopDetailBody(id, country, range, {
-      authority: true,
+    const data = kaloPost('/shop/detail/searchNewProducts', shopListBody(id, range, {
       pageNo: page,
       pageSize,
       sort: [{ field: 'revenue', type: 'DESC' }],
@@ -1097,7 +1110,7 @@ app.get('/api/shop/:id/history', (req, res) => {
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
-    const data = kaloPost('/shop/detail/history', shopDetailBody(id, country, range), country)
+    const data = kaloPost('/shop/detail/history', shopOverviewBody(id, country, range), country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
