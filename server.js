@@ -6,7 +6,7 @@ import { Resend } from 'resend'
 import cron from 'node-cron'
 import swaggerJsdoc from 'swagger-jsdoc'
 import swaggerUi from 'swagger-ui-express'
-import { headersForCountry, parseCountry, countryLowercase, DEFAULT_COUNTRY } from './lib/countries.js'
+import { headersForCountry, parseCountry, countryLowercase, DEFAULT_COUNTRY, COUNTRY_CONFIG } from './lib/countries.js'
 
 const app = express()
 app.use(cors())
@@ -866,9 +866,34 @@ app.get('/api/shops', (req, res) => {
 // ---------------------------------------------------------------------------
 // Shop detail (criadores afiliados, produtos, vídeos, lives da loja)
 // ---------------------------------------------------------------------------
-// Paths upstream inferidos do padrão `/creator/detail/*` e `/product/detail/*`.
-// Se algum retornar 4xx do upstream, ajustar o path aqui (sem deploy externo —
-// auto-deploy via GitHub Actions cobre).
+// Paths confirmados em 2026-05-15 via DevTools do Kalodata logado (loja
+// Barbour's Beauty). Os paths que parecem "iguais" em padrão (creator/queryList,
+// searchProducts, etc) na verdade NÃO existem pra shop — usamos as variantes
+// específicas: searchCooperativeCreators, product/queryList, searchVideos,
+// searchLives.
+//
+// Payload base de TODOS os endpoints de listagem:
+//   { id, startDate, endDate, cateIds: [], authority: true, pageNo, pageSize,
+//     sort: [{ field, type }], currency, region }
+// Campos extras por aba: creatorType (creators+lives), productType (products),
+// videoType+creatorNickName (videos).
+
+/**
+ * Helper: monta o payload base que TODOS os endpoints de shop detail compartilham.
+ * Inclui currency + region derivados do country (Kalodata aceita ambos no body
+ * além dos headers — manter consistente com o que a UI envia).
+ */
+function shopDetailBody(id, country, range, extra = {}) {
+  const cfg = COUNTRY_CONFIG[country] || COUNTRY_CONFIG.BR
+  return {
+    id,
+    ...range,
+    cateIds: [],
+    currency: cfg.currency,
+    region: cfg.country,
+    ...extra,
+  }
+}
 
 /**
  * @swagger
@@ -876,17 +901,6 @@ app.get('/api/shops', (req, res) => {
  *   get:
  *     summary: KPIs agregados de uma loja (receita, vendas, breakdown por canal)
  *     tags: [Shops]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *       - in: query
- *         name: days
- *         schema: { type: integer, default: 7, enum: [7, 30] }
- *     responses:
- *       200: { description: Totais da loja }
- *       500: { description: Erro interno }
  */
 app.get('/api/shop/:id/total', (req, res) => {
   try {
@@ -894,7 +908,27 @@ app.get('/api/shop/:id/total', (req, res) => {
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
-    const data = kaloPost('/shop/detail/total', { country, id, ...range }, country)
+    const data = kaloPost('/shop/detail/total', shopDetailBody(id, country, range), country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/shop/{id}/info:
+ *   get:
+ *     summary: Dados gerais da loja (nome, tipo, região, categoria)
+ *     tags: [Shops]
+ */
+app.get('/api/shop/:id/info', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const range = getDateRange(days)
+    const data = kaloPost('/shop/detail', shopDetailBody(id, country, range), country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -905,25 +939,8 @@ app.get('/api/shop/:id/total', (req, res) => {
  * @swagger
  * /api/shop/{id}/creators:
  *   get:
- *     summary: Top criadores afiliados a uma loja
+ *     summary: Top criadores afiliados a uma loja (cooperativos)
  *     tags: [Shops, Creators]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *       - in: query
- *         name: days
- *         schema: { type: integer, default: 7, enum: [7, 30] }
- *       - in: query
- *         name: page
- *         schema: { type: integer, default: 1 }
- *       - in: query
- *         name: pageSize
- *         schema: { type: integer, default: 10 }
- *     responses:
- *       200: { description: Lista de criadores afiliados }
- *       500: { description: Erro interno }
  */
 app.get('/api/shop/:id/creators', (req, res) => {
   try {
@@ -932,17 +949,16 @@ app.get('/api/shop/:id/creators', (req, res) => {
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 10
+    const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/detail/creator/queryList', {
-      id,
-      country,
-      ...range,
+    const data = kaloPost('/shop/detail/searchCooperativeCreators', shopDetailBody(id, country, range, {
       authority: true,
       pageNo: page,
       pageSize,
-      sort: [{ field: 'revenue', type: 'DESC' }],
-    }, country)
+      sort: [{ field: sortField, type: 'DESC' }],
+      creatorType: '',
+    }), country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -955,23 +971,6 @@ app.get('/api/shop/:id/creators', (req, res) => {
  *   get:
  *     summary: Produtos vendidos por uma loja
  *     tags: [Shops, Products]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *       - in: query
- *         name: days
- *         schema: { type: integer, default: 7, enum: [7, 30] }
- *       - in: query
- *         name: page
- *         schema: { type: integer, default: 1 }
- *       - in: query
- *         name: pageSize
- *         schema: { type: integer, default: 20 }
- *     responses:
- *       200: { description: Lista de produtos da loja }
- *       500: { description: Erro interno }
  */
 app.get('/api/shop/:id/products', (req, res) => {
   try {
@@ -979,19 +978,17 @@ app.get('/api/shop/:id/products', (req, res) => {
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
-    const pageSize = parseInt(req.query.pageSize) || 20
+    const pageSize = parseInt(req.query.pageSize) || 10
+    const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/detail/searchProducts', {
-      id,
-      country,
-      ...range,
-      cateIds: [],
+    const data = kaloPost('/shop/detail/product/queryList', shopDetailBody(id, country, range, {
       authority: true,
       pageNo: page,
       pageSize,
-      sort: [{ field: 'revenue', type: 'DESC' }],
-    }, country)
+      sort: [{ field: sortField, type: 'DESC' }],
+      productType: '',
+    }), country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1002,25 +999,8 @@ app.get('/api/shop/:id/products', (req, res) => {
  * @swagger
  * /api/shop/{id}/videos:
  *   get:
- *     summary: Vídeos e anúncios que venderam produtos da loja
+ *     summary: Vídeos e anúncios que venderam produtos da loja (campo `ad: 1` = anúncio)
  *     tags: [Shops, Videos]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *       - in: query
- *         name: days
- *         schema: { type: integer, default: 7, enum: [7, 30] }
- *       - in: query
- *         name: page
- *         schema: { type: integer, default: 1 }
- *       - in: query
- *         name: pageSize
- *         schema: { type: integer, default: 10 }
- *     responses:
- *       200: { description: Lista de vídeos }
- *       500: { description: Erro interno }
  */
 app.get('/api/shop/:id/videos', (req, res) => {
   try {
@@ -1029,17 +1009,17 @@ app.get('/api/shop/:id/videos', (req, res) => {
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 10
+    const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/detail/video/queryList', {
-      id,
-      country,
-      ...range,
+    const data = kaloPost('/shop/detail/searchVideos', shopDetailBody(id, country, range, {
       authority: true,
       pageNo: page,
       pageSize,
-      sort: [{ field: 'revenue', type: 'DESC' }],
-    }, country)
+      sort: [{ field: sortField, type: 'DESC' }],
+      videoType: '',
+      creatorNickName: '',
+    }), country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1052,23 +1032,6 @@ app.get('/api/shop/:id/videos', (req, res) => {
  *   get:
  *     summary: Lives que venderam produtos da loja
  *     tags: [Shops, Lives]
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *       - in: query
- *         name: days
- *         schema: { type: integer, default: 7, enum: [7, 30] }
- *       - in: query
- *         name: page
- *         schema: { type: integer, default: 1 }
- *       - in: query
- *         name: pageSize
- *         schema: { type: integer, default: 10 }
- *     responses:
- *       200: { description: Lista de lives }
- *       500: { description: Erro interno }
  */
 app.get('/api/shop/:id/lives', (req, res) => {
   try {
@@ -1077,17 +1040,64 @@ app.get('/api/shop/:id/lives', (req, res) => {
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 10
+    const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/detail/live/queryList', {
-      id,
-      country,
-      ...range,
+    const data = kaloPost('/shop/detail/searchLives', shopDetailBody(id, country, range, {
+      authority: true,
+      pageNo: page,
+      pageSize,
+      sort: [{ field: sortField, type: 'DESC' }],
+      creatorType: '',
+    }), country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/shop/{id}/new-products:
+ *   get:
+ *     summary: Novos produtos lançados pela loja no período
+ *     tags: [Shops, Products]
+ */
+app.get('/api/shop/:id/new-products', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const page = parseInt(req.query.page) || 1
+    const pageSize = parseInt(req.query.pageSize) || 10
+    const range = getDateRange(days)
+
+    const data = kaloPost('/shop/detail/searchNewProducts', shopDetailBody(id, country, range, {
       authority: true,
       pageNo: page,
       pageSize,
       sort: [{ field: 'revenue', type: 'DESC' }],
-    }, country)
+    }), country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/shop/{id}/history:
+ *   get:
+ *     summary: Série temporal de métricas da loja
+ *     tags: [Shops]
+ */
+app.get('/api/shop/:id/history', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const range = getDateRange(days)
+    const data = kaloPost('/shop/detail/history', shopDetailBody(id, country, range), country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
