@@ -1159,6 +1159,93 @@ app.get('/api/product/:id/detail', (req, res) => {
 
 /**
  * @swagger
+ * /api/product/{id}/images:
+ *   get:
+ *     summary: Carrossel de imagens do produto
+ *     description: Retorna array de URLs (kalocdn) das fotos cadastradas no TikTok Shop.
+ *     tags: [Products]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Array de URLs }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/product/:id/images', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    // Upstream usa GET com query string (não POST).
+    const data = kaloGet(`/product/detail/getImages?productId=${encodeURIComponent(id)}`, country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/product/{id}/history:
+ *   get:
+ *     summary: Série temporal diária do produto (para gráfico)
+ *     description: Retorna lista com revenue/sale/video_revenue/live_revenue/unit_price/creatorConversionRatio por partition_day.
+ *     tags: [Products]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 7, enum: [7, 30] }
+ *     responses:
+ *       200: { description: Série temporal }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/product/:id/history', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const range = getDateRange(days)
+    const data = kaloPost('/product/detail/history', { country, id, ...range }, country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/product/{id}/analysis:
+ *   get:
+ *     summary: Atributos + características-chave do produto (AI features)
+ *     description: Retorna highlights (key_word + region_text) e attributes (key/value) — fonte de "Características-chave" e "Atributos".
+ *     tags: [Products]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: highlights[] + attributes[] }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/product/:id/analysis', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const data = kaloPost('/product/analysis', { country, id }, country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
  * /api/product/{id}/total:
  *   get:
  *     summary: KPIs agregados de um produto (receita, vendas, video/live/shopping mall revenue)
@@ -1579,6 +1666,33 @@ app.get('/api/creator/:id/total', (req, res) => {
       sellerId: '',
       authority: true,
     }, country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/creator/{id}/detail:
+ *   get:
+ *     summary: Detalhe do criador (perfil + MCN + contatos)
+ *     description: Retorna nickname, handle, signature, follower_count, creator_type, mcn_name, has_mcn, creatorContent (whatsapp, instagram, email, youtube, etc.).
+ *     tags: [Creators]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Perfil do criador }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/creator/:id/detail', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const data = kaloPost('/creator/detail', { country, id }, country)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
