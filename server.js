@@ -610,6 +610,43 @@ app.get('/api/video/:id/url', (req, res) => {
   }
 })
 
+/**
+ * @swagger
+ * /api/video/{id}/total:
+ *   get:
+ *     summary: Métricas totais de um vídeo (views, receita, vendas)
+ *     tags: [Videos]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *         description: ID do vídeo
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 30, enum: [7, 30] }
+ *       - in: query
+ *         name: country
+ *         schema: { type: string, default: BR }
+ *     responses:
+ *       200:
+ *         description: Métricas do vídeo (views, revenue, sale, new_followers, day_*)
+ *       500:
+ *         description: Erro interno
+ */
+app.get('/api/video/:id/total', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 30
+    const range = getDateRange(days)
+    const data = kaloPost('/video/detail/total', { id, country, ...range, days }, country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Videos
 // ---------------------------------------------------------------------------
