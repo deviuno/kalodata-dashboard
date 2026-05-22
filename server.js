@@ -1537,6 +1537,98 @@ app.get('/api/search/creators', (req, res) => {
 
 /**
  * @swagger
+ * /api/search/products:
+ *   get:
+ *     summary: Buscar produtos por nome (fulltext)
+ *     tags: [Products]
+ *     parameters:
+ *       - in: query
+ *         name: keyword
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Termo de busca (nome do produto)
+ *       - in: query
+ *         name: country
+ *         schema: { type: string, default: BR }
+ *       - in: query
+ *         name: pageNo
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200:
+ *         description: Lista de produtos encontrados
+ */
+app.get('/api/search/products', (req, res) => {
+  try {
+    const country  = parseCountry(req)
+    const keyword  = (req.query.keyword || '').trim()
+    const pageNo   = parseInt(req.query.pageNo)  || 1
+    const pageSize = parseInt(req.query.pageSize) || 20
+    if (!keyword) return res.json({ success: true, data: [] })
+
+    const data = kaloPost('/overview/fullText/search', {
+      country_code: countryLowercase(country),
+      keyword,
+      scope: [{ index: 'product', pageNo, pageSize }],
+    }, country)
+    const products = data?.data?.product || []
+    res.json({ success: true, data: products })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/search/videos:
+ *   get:
+ *     summary: Buscar vídeos por título (fulltext)
+ *     tags: [Videos]
+ *     parameters:
+ *       - in: query
+ *         name: keyword
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Termo de busca (título do vídeo)
+ *       - in: query
+ *         name: country
+ *         schema: { type: string, default: BR }
+ *       - in: query
+ *         name: pageNo
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200:
+ *         description: Lista de vídeos encontrados
+ */
+app.get('/api/search/videos', (req, res) => {
+  try {
+    const country  = parseCountry(req)
+    const keyword  = (req.query.keyword || '').trim()
+    const pageNo   = parseInt(req.query.pageNo)  || 1
+    const pageSize = parseInt(req.query.pageSize) || 20
+    if (!keyword) return res.json({ success: true, data: [] })
+
+    const data = kaloPost('/overview/fullText/search', {
+      country_code: countryLowercase(country),
+      keyword,
+      scope: [{ index: 'video', pageNo, pageSize }],
+    }, country)
+    const videos = data?.data?.video || []
+    res.json({ success: true, data: videos })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
  * /api/creator/{id}/products:
  *   get:
  *     summary: Listar produtos vendidos por um criador
