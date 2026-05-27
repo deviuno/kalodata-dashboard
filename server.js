@@ -27,7 +27,7 @@ function loadConfig() {
     kalowave_token: '',
     kalowave_cookies: '',
     // Quando definido, endpoints administrativos exigem header `x-admin-key` igual.
-    // Vazio = gate desabilitado (modo dev). Em produÃ§Ã£o, setar via config.json.
+    // Vazio = gate desabilitado (modo dev). Em produÃÂ§ÃÂ£o, setar via config.json.
     admin_key: process.env.ADMIN_KEY || ''
   }
   try {
@@ -41,24 +41,24 @@ function loadConfig() {
 // ---------------------------------------------------------------------------
 // Admin gate (x-admin-key)
 // ---------------------------------------------------------------------------
-// Middleware que protege endpoints administrativos. Quando `admin_key` estÃ¡
-// vazio no config, deixa passar com warning (modo dev). Quando estÃ¡ setado,
+// Middleware que protege endpoints administrativos. Quando `admin_key` estÃÂ¡
+// vazio no config, deixa passar com warning (modo dev). Quando estÃÂ¡ setado,
 // exige header `x-admin-key` exato. Sem isso, qualquer um que descobrir o IP
-// do intermediÃ¡rio consegue ler/escrever cookies, config, e disparar alerts.
+// do intermediÃÂ¡rio consegue ler/escrever cookies, config, e disparar alerts.
 let warnedAdminKeyMissing = false
 function requireAdminKey(req, res, next) {
   const cfg = loadConfig()
   const expected = (cfg.admin_key || '').trim()
   if (!expected) {
     if (!warnedAdminKeyMissing) {
-      console.warn('[ADMIN] admin_key vazio no config â endpoints administrativos sem gate. Setar em produÃ§Ã£o.')
+      console.warn('[ADMIN] admin_key vazio no config Ã¢ÂÂ endpoints administrativos sem gate. Setar em produÃÂ§ÃÂ£o.')
       warnedAdminKeyMissing = true
     }
     return next()
   }
   const got = (req.headers['x-admin-key'] || '').trim()
   if (got !== expected) {
-    return res.status(401).json({ success: false, message: 'NÃ£o autorizado (x-admin-key ausente ou incorreto)' })
+    return res.status(401).json({ success: false, message: 'NÃÂ£o autorizado (x-admin-key ausente ou incorreto)' })
   }
   return next()
 }
@@ -111,7 +111,7 @@ function kaloPost(path, body, country = DEFAULT_COUNTRY) {
 
   const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
   if (result.trimStart().startsWith('<')) {
-    throw new Error('Cloudflare challenge â atualize os cookies (precisa do cf_clearance)')
+    throw new Error('Cloudflare challenge Ã¢ÂÂ atualize os cookies (precisa do cf_clearance)')
   }
   if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
@@ -145,7 +145,7 @@ function kaloGet(path, country = DEFAULT_COUNTRY) {
 
   const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
   if (result.trimStart().startsWith('<')) {
-    throw new Error('Cloudflare challenge â atualize os cookies (precisa do cf_clearance)')
+    throw new Error('Cloudflare challenge Ã¢ÂÂ atualize os cookies (precisa do cf_clearance)')
   }
   if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
@@ -168,7 +168,7 @@ function getKalowaveToken() {
 
   const cfg = loadConfig()
 
-  // Auto: Kalodata cookies â SSO token â Kalowave access token
+  // Auto: Kalodata cookies Ã¢ÂÂ SSO token Ã¢ÂÂ Kalowave access token
   const cookies = getCookies()
   if (cookies) {
     try {
@@ -274,15 +274,15 @@ function kalowavePost(path, body) {
 // Date helpers
 // ---------------------------------------------------------------------------
 function getDateRange(days) {
-  // Use local date components (not toISOString â UTC) so the window matches
+  // Use local date components (not toISOString Ã¢ÂÂ UTC) so the window matches
   // the user's calendar day in America/Sao_Paulo, not UTC.
   //
   // Janela: [hoje-2 - (days-1), hoje-2].
-  // O Kalodata fecha o agregado de cada dia sÃ³ no dia seguinte (em UTC), entÃ£o
-  // "ontem" (BRT) ainda pode estar com dados parciais. A prÃ³pria UI da
-  // Kalodata pula pra D-2 â confirmado comparando: pra days=30 num "hoje"=14/05
-  // a fonte mostra 13/04 ~ 12/05, e antes daqui mandÃ¡vamos 14/04 ~ 13/05 (off-by-one).
-  // Esse offset gerava ~R$4-6k de diferenÃ§a em vÃ­deos sensÃ­veis ao Ãºltimo dia.
+  // O Kalodata fecha o agregado de cada dia sÃÂ³ no dia seguinte (em UTC), entÃÂ£o
+  // "ontem" (BRT) ainda pode estar com dados parciais. A prÃÂ³pria UI da
+  // Kalodata pula pra D-2 Ã¢ÂÂ confirmado comparando: pra days=30 num "hoje"=14/05
+  // a fonte mostra 13/04 ~ 12/05, e antes daqui mandÃÂ¡vamos 14/04 ~ 13/05 (off-by-one).
+  // Esse offset gerava ~R$4-6k de diferenÃÂ§a em vÃÂ­deos sensÃÂ­veis ao ÃÂºltimo dia.
   const fmt = (d) => {
     const y = d.getFullYear()
     const m = String(d.getMonth() + 1).padStart(2, '0')
@@ -318,7 +318,7 @@ async function sendCookieExpiredAlert() {
   const { resend_api_key, email_from, email_to } = config
 
   if (!resend_api_key || !email_to) {
-    console.warn('[ALERT] Resend not configured â skipping alert. Set resend_api_key and email_to in config.json.')
+    console.warn('[ALERT] Resend not configured Ã¢ÂÂ skipping alert. Set resend_api_key and email_to in config.json.')
     return false
   }
 
@@ -364,7 +364,7 @@ cron.schedule(config.cookie_check_cron, async () => {
   console.log('[CRON] Checking cookie health...')
   const valid = checkSession()
   if (!valid) {
-    console.warn('[CRON] Session invalid â sending alert')
+    console.warn('[CRON] Session invalid Ã¢ÂÂ sending alert')
     await sendCookieExpiredAlert().catch((e) => console.error('[CRON] Email error:', e.message))
   } else {
     console.log('[CRON] Session OK')
@@ -614,14 +614,14 @@ app.get('/api/video/:id/url', (req, res) => {
  * @swagger
  * /api/video/{id}/total:
  *   get:
- *     summary: MÃ©tricas totais de um vÃ­deo (views, receita, vendas)
+ *     summary: MÃÂ©tricas totais de um vÃÂ­deo (views, receita, vendas)
  *     tags: [Videos]
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
  *         schema: { type: string }
- *         description: ID do vÃ­deo
+ *         description: ID do vÃÂ­deo
  *       - in: query
  *         name: days
  *         schema: { type: integer, default: 30, enum: [7, 30] }
@@ -630,7 +630,7 @@ app.get('/api/video/:id/url', (req, res) => {
  *         schema: { type: string, default: BR }
  *     responses:
  *       200:
- *         description: MÃ©tricas do vÃ­deo (views, revenue, sale, new_followers, day_*)
+ *         description: MÃÂ©tricas do vÃÂ­deo (views, revenue, sale, new_followers, day_*)
  *       500:
  *         description: Erro interno
  */
@@ -802,7 +802,7 @@ app.get('/api/lives', (req, res) => {
  * @swagger
  * /api/creator/{id}/lives:
  *   get:
- *     summary: Lives de um criador (todas as transmissÃµes no perÃ­odo)
+ *     summary: Lives de um criador (todas as transmissÃÂµes no perÃÂ­odo)
  *     tags: [Lives]
  *     parameters:
  *       - in: path
@@ -901,12 +901,12 @@ app.get('/api/shops', (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
-// Shop detail (criadores afiliados, produtos, vÃ­deos, lives da loja)
+// Shop detail (criadores afiliados, produtos, vÃÂ­deos, lives da loja)
 // ---------------------------------------------------------------------------
 // Paths confirmados em 2026-05-15 via DevTools do Kalodata logado (loja
-// Barbour's Beauty). Os paths que parecem "iguais" em padrÃ£o (creator/queryList,
-// searchProducts, etc) na verdade NÃO existem pra shop â usamos as variantes
-// especÃ­ficas: searchCooperativeCreators, product/queryList, searchVideos,
+// Barbour's Beauty). Os paths que parecem "iguais" em padrÃÂ£o (creator/queryList,
+// searchProducts, etc) na verdade NÃÂO existem pra shop Ã¢ÂÂ usamos as variantes
+// especÃÂ­ficas: searchCooperativeCreators, product/queryList, searchVideos,
 // searchLives.
 //
 // Payload base de TODOS os endpoints de listagem:
@@ -917,7 +917,7 @@ app.get('/api/shops', (req, res) => {
 
 /**
  * Helper: payload pros endpoints de overview (/total, /detail, /history).
- * INCLUI currency + region (esses 3 endpoints exigem; sem eles dÃ¡ Invalid Parameter).
+ * INCLUI currency + region (esses 3 endpoints exigem; sem eles dÃÂ¡ Invalid Parameter).
  */
 function shopOverviewBody(id, country, range, extra = {}) {
   const cfg = COUNTRY_CONFIG[country] || COUNTRY_CONFIG.BR
@@ -933,12 +933,12 @@ function shopOverviewBody(id, country, range, extra = {}) {
 
 /**
  * Helper: payload pros endpoints de listagem paginada (creators, products,
- * videos, lives, new-products). NÃO inclui currency/region â Kalodata
+ * videos, lives, new-products). NÃÂO inclui currency/region Ã¢ÂÂ Kalodata
  * rejeita com `code: 501 "Invalid Parameter"` se enviar esses campos
  * nesses endpoints (confirmado empiricamente em 2026-05-15).
  *
- * Kalodata tambÃ©m rejeita pageSize < 10 nesses endpoints. Clampa pro
- * mÃ­nimo 10 (defensivo â frontend jÃ¡ usa 10/20).
+ * Kalodata tambÃÂ©m rejeita pageSize < 10 nesses endpoints. Clampa pro
+ * mÃÂ­nimo 10 (defensivo Ã¢ÂÂ frontend jÃÂ¡ usa 10/20).
  */
 function shopListBody(id, range, extra = {}) {
   const clamped = { ...extra }
@@ -979,7 +979,7 @@ app.get('/api/shop/:id/total', (req, res) => {
  * @swagger
  * /api/shop/{id}/info:
  *   get:
- *     summary: Dados gerais da loja (nome, tipo, regiÃ£o, categoria)
+ *     summary: Dados gerais da loja (nome, tipo, regiÃÂ£o, categoria)
  *     tags: [Shops]
  */
 app.get('/api/shop/:id/info', (req, res) => {
@@ -1057,7 +1057,7 @@ app.get('/api/shop/:id/products', (req, res) => {
  * @swagger
  * /api/shop/{id}/videos:
  *   get:
- *     summary: VÃ­deos e anÃºncios que venderam produtos da loja (campo `ad: 1` = anÃºncio)
+ *     summary: VÃÂ­deos e anÃÂºncios que venderam produtos da loja (campo `ad: 1` = anÃÂºncio)
  *     tags: [Shops, Videos]
  */
 app.get('/api/shop/:id/videos', (req, res) => {
@@ -1116,7 +1116,7 @@ app.get('/api/shop/:id/lives', (req, res) => {
  * @swagger
  * /api/shop/{id}/new-products:
  *   get:
- *     summary: Novos produtos lanÃ§ados pela loja no perÃ­odo
+ *     summary: Novos produtos lanÃÂ§ados pela loja no perÃÂ­odo
  *     tags: [Shops, Products]
  */
 app.get('/api/shop/:id/new-products', (req, res) => {
@@ -1143,7 +1143,7 @@ app.get('/api/shop/:id/new-products', (req, res) => {
  * @swagger
  * /api/shop/{id}/history:
  *   get:
- *     summary: SÃ©rie temporal de mÃ©tricas da loja
+ *     summary: SÃÂ©rie temporal de mÃÂ©tricas da loja
  *     tags: [Shops]
  */
 app.get('/api/shop/:id/history', (req, res) => {
@@ -1214,7 +1214,7 @@ app.get('/api/product/:id/images', (req, res) => {
   try {
     const country = parseCountry(req)
     const { id } = req.params
-    // Upstream usa GET com query string (nÃ£o POST).
+    // Upstream usa GET com query string (nÃÂ£o POST).
     const data = kaloGet(`/product/detail/getImages?productId=${encodeURIComponent(id)}`, country)
     res.json(data)
   } catch (e) {
@@ -1226,7 +1226,7 @@ app.get('/api/product/:id/images', (req, res) => {
  * @swagger
  * /api/product/{id}/history:
  *   get:
- *     summary: SÃ©rie temporal diÃ¡ria do produto (para grÃ¡fico)
+ *     summary: SÃÂ©rie temporal diÃÂ¡ria do produto (para grÃÂ¡fico)
  *     description: Retorna lista com revenue/sale/video_revenue/live_revenue/unit_price/creatorConversionRatio por partition_day.
  *     tags: [Products]
  *     parameters:
@@ -1238,7 +1238,7 @@ app.get('/api/product/:id/images', (req, res) => {
  *         name: days
  *         schema: { type: integer, default: 7, enum: [7, 30] }
  *     responses:
- *       200: { description: SÃ©rie temporal }
+ *       200: { description: SÃÂ©rie temporal }
  *       500: { description: Erro interno }
  */
 app.get('/api/product/:id/history', (req, res) => {
@@ -1258,8 +1258,8 @@ app.get('/api/product/:id/history', (req, res) => {
  * @swagger
  * /api/product/{id}/analysis:
  *   get:
- *     summary: Atributos + caracterÃ­sticas-chave do produto (AI features)
- *     description: Retorna highlights (key_word + region_text) e attributes (key/value) â fonte de "CaracterÃ­sticas-chave" e "Atributos".
+ *     summary: Atributos + caracterÃÂ­sticas-chave do produto (AI features)
+ *     description: Retorna highlights (key_word + region_text) e attributes (key/value) Ã¢ÂÂ fonte de "CaracterÃÂ­sticas-chave" e "Atributos".
  *     tags: [Products]
  *     parameters:
  *       - in: path
@@ -1393,7 +1393,7 @@ app.get('/api/product/:id/lives', (req, res) => {
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
-    // Kalodata rejeita pageSize<10 com Invalid Parameter (mesmo padrÃ£o dos
+    // Kalodata rejeita pageSize<10 com Invalid Parameter (mesmo padrÃÂ£o dos
     // endpoints de shop detail). Clampa defensivamente.
     const pageSize = Math.max(10, parseInt(req.query.pageSize) || 10)
     const sortField = req.query.sortField || 'revenue'
@@ -1622,7 +1622,7 @@ app.get('/api/search/products', (req, res) => {
  * @swagger
  * /api/search/videos:
  *   get:
- *     summary: Buscar vÃ­deos por tÃ­tulo (fulltext)
+ *     summary: Buscar vÃÂ­deos por tÃÂ­tulo (fulltext)
  *     tags: [Videos]
  *     parameters:
  *       - in: query
@@ -1630,7 +1630,7 @@ app.get('/api/search/products', (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *         description: Termo de busca (tÃ­tulo do vÃ­deo)
+ *         description: Termo de busca (tÃÂ­tulo do vÃÂ­deo)
  *       - in: query
  *         name: country
  *         schema: { type: string, default: BR }
@@ -1642,7 +1642,7 @@ app.get('/api/search/products', (req, res) => {
  *         schema: { type: integer, default: 20 }
  *     responses:
  *       200:
- *         description: Lista de vÃ­deos encontrados
+ *         description: Lista de vÃÂ­deos encontrados
  */
 app.get('/api/search/videos', (req, res) => {
   try {
@@ -2112,7 +2112,7 @@ app.get('/api/health', (_req, res) => {
  * @swagger
  * /api/probe-country:
  *   get:
- *     summary: Validar se um country code Ã© aceito pelo upstream Kalodata
+ *     summary: Validar se um country code ÃÂ© aceito pelo upstream Kalodata
  *     tags: [Session]
  *     parameters:
  *       - in: query
@@ -2126,7 +2126,7 @@ app.get('/api/probe-country', (req, res) => {
   const country = parseCountry(req)
   const t0 = Date.now()
   try {
-    // Bate num endpoint barato (top 1 produto, sem agregaÃ§Ãµes pesadas) sÃ³ pra
+    // Bate num endpoint barato (top 1 produto, sem agregaÃÂ§ÃÂµes pesadas) sÃÂ³ pra
     // validar que o upstream aceita o country code dado e responde com data.
     const range = getDateRange(7)
     const data = kaloPost('/product/queryList', {
@@ -2197,10 +2197,10 @@ app.get('/api/probe-country', (req, res) => {
  */
 // In-memory cache for insight endpoints. Upstream (clip.kalowave.com) pode
 // levar 30s+ pra responder script-analysis; transcript nunca muda por videoId,
-// e a URL expira sÃ³ quando o CDN gira. TTLs: transcript 7d, url 30min.
+// e a URL expira sÃÂ³ quando o CDN gira. TTLs: transcript 7d, url 30min.
 const INSIGHT_TRANSCRIPT_TTL = 7 * 24 * 60 * 60 * 1000
 const INSIGHT_URL_TTL = 30 * 60 * 1000
-const insightCache = new Map() // key â { data, expiresAt }
+const insightCache = new Map() // key Ã¢ÂÂ { data, expiresAt }
 
 function insightCacheGet(key) {
   const entry = insightCache.get(key)
@@ -2585,10 +2585,10 @@ app.get('/api/creator/search/:handle', (req, res) => {
 
 // ---------------------------------------------------------------------------
 // Live (Livestream) detail endpoints
-// /api/live/:id/detail      → combina /livestream/detail + /livestream/detail/total
-// /api/live/:id/products    → /livestream/detail/product/queryList + count
-// /api/live/:id/chart       → /livestream/detail/history
-// /api/live/:id/categories  → /livestream/detail/productStrategy
+// /api/live/:id/detail      â combina /livestream/detail + /livestream/detail/total
+// /api/live/:id/products    â /livestream/detail/product/queryList + count
+// /api/live/:id/chart       â /livestream/detail/history
+// /api/live/:id/categories  â /livestream/detail/productStrategy
 //
 // Paths confirmados via DevTools do Kalodata em 2026-05-27.
 // Para lives encerradas (finish_time no passado) os dados nao mudam mais,
@@ -2596,9 +2596,9 @@ app.get('/api/creator/search/:handle', (req, res) => {
 // Para lives ativas (finish_time nulo ou no futuro) usamos TTL curto (5 min).
 // ---------------------------------------------------------------------------
 
-const LIVE_CACHE_SHORT = 5 * 60 * 1000          // 5 min — live ativa
-const LIVE_CACHE_DETAIL = 6 * 60 * 60 * 1000     // 6 h  — detail / products
-const LIVE_CACHE_LONG   = 24 * 60 * 60 * 1000    // 24 h — chart / categories
+const LIVE_CACHE_SHORT = 5 * 60 * 1000          // 5 min â live ativa
+const LIVE_CACHE_DETAIL = 6 * 60 * 60 * 1000     // 6 h  â detail / products
+const LIVE_CACHE_LONG   = 24 * 60 * 60 * 1000    // 24 h â chart / categories
 const liveCache = new Map()
 
 function liveCacheGet(key) {
@@ -2636,7 +2636,8 @@ function liveTimestampToDate(ts) {
 function parseFinishTime(ft) {
   if (!ft) return null
   if (/^\d{10,}$/.test(String(ft))) return parseInt(ft)
-  const parsed = new Date(String(ft).replace(/\//g, '-').replace(' ', 'T') + ':00')
+  const s2 = String(ft).replace(/\//g, '-').replace(' ', 'T')
+  const parsed = new Date(s2.includes(':') && s2.split('T')[1]?.split(':').length >= 3 ? s2 : s2 + ':00')
   return isNaN(parsed.getTime()) ? null : Math.floor(parsed.getTime() / 1000)
 }
 
@@ -2644,7 +2645,8 @@ function parseFinishTime(ft) {
 function parseCreateTime(ct) {
   if (!ct) return null
   if (/^\d{10,}$/.test(String(ct))) return parseInt(ct)
-  const parsed = new Date(String(ct).replace(/\//g, '-').replace(' ', 'T') + ':00')
+  const s = String(ct).replace(/\//g, '-').replace(' ', 'T')
+  const parsed = new Date(s.includes(':') && s.split('T')[1]?.split(':').length >= 3 ? s : s + ':00')
   return isNaN(parsed.getTime()) ? null : Math.floor(parsed.getTime() / 1000)
 }
 
@@ -2680,7 +2682,7 @@ app.get('/api/live/:id/detail', (req, res) => {
     }
     const base = baseResp.data?.base || baseResp.data || {}
 
-    // 2. Metricas totais (revenue, sale, views, unit_price) — requer date range
+    // 2. Metricas totais (revenue, sale, views, unit_price) â requer date range
     const createUnix = parseCreateTime(base.create_time)
     const finishUnix = parseFinishTime(base.finish_time)
 
