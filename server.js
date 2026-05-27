@@ -27,7 +27,7 @@ function loadConfig() {
     kalowave_token: '',
     kalowave_cookies: '',
     // Quando definido, endpoints administrativos exigem header `x-admin-key` igual.
-    // Vazio = gate desabilitado (modo dev). Em produção, setar via config.json.
+    // Vazio = gate desabilitado (modo dev). Em produÃ§Ã£o, setar via config.json.
     admin_key: process.env.ADMIN_KEY || ''
   }
   try {
@@ -41,24 +41,24 @@ function loadConfig() {
 // ---------------------------------------------------------------------------
 // Admin gate (x-admin-key)
 // ---------------------------------------------------------------------------
-// Middleware que protege endpoints administrativos. Quando `admin_key` está
-// vazio no config, deixa passar com warning (modo dev). Quando está setado,
+// Middleware que protege endpoints administrativos. Quando `admin_key` estÃ¡
+// vazio no config, deixa passar com warning (modo dev). Quando estÃ¡ setado,
 // exige header `x-admin-key` exato. Sem isso, qualquer um que descobrir o IP
-// do intermediário consegue ler/escrever cookies, config, e disparar alerts.
+// do intermediÃ¡rio consegue ler/escrever cookies, config, e disparar alerts.
 let warnedAdminKeyMissing = false
 function requireAdminKey(req, res, next) {
   const cfg = loadConfig()
   const expected = (cfg.admin_key || '').trim()
   if (!expected) {
     if (!warnedAdminKeyMissing) {
-      console.warn('[ADMIN] admin_key vazio no config — endpoints administrativos sem gate. Setar em produção.')
+      console.warn('[ADMIN] admin_key vazio no config â endpoints administrativos sem gate. Setar em produÃ§Ã£o.')
       warnedAdminKeyMissing = true
     }
     return next()
   }
   const got = (req.headers['x-admin-key'] || '').trim()
   if (got !== expected) {
-    return res.status(401).json({ success: false, message: 'Não autorizado (x-admin-key ausente ou incorreto)' })
+    return res.status(401).json({ success: false, message: 'NÃ£o autorizado (x-admin-key ausente ou incorreto)' })
   }
   return next()
 }
@@ -111,7 +111,7 @@ function kaloPost(path, body, country = DEFAULT_COUNTRY) {
 
   const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
   if (result.trimStart().startsWith('<')) {
-    throw new Error('Cloudflare challenge — atualize os cookies (precisa do cf_clearance)')
+    throw new Error('Cloudflare challenge â atualize os cookies (precisa do cf_clearance)')
   }
   if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
@@ -145,7 +145,7 @@ function kaloGet(path, country = DEFAULT_COUNTRY) {
 
   const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
   if (result.trimStart().startsWith('<')) {
-    throw new Error('Cloudflare challenge — atualize os cookies (precisa do cf_clearance)')
+    throw new Error('Cloudflare challenge â atualize os cookies (precisa do cf_clearance)')
   }
   if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
@@ -168,7 +168,7 @@ function getKalowaveToken() {
 
   const cfg = loadConfig()
 
-  // Auto: Kalodata cookies → SSO token → Kalowave access token
+  // Auto: Kalodata cookies â SSO token â Kalowave access token
   const cookies = getCookies()
   if (cookies) {
     try {
@@ -274,15 +274,15 @@ function kalowavePost(path, body) {
 // Date helpers
 // ---------------------------------------------------------------------------
 function getDateRange(days) {
-  // Use local date components (not toISOString → UTC) so the window matches
+  // Use local date components (not toISOString â UTC) so the window matches
   // the user's calendar day in America/Sao_Paulo, not UTC.
   //
   // Janela: [hoje-2 - (days-1), hoje-2].
-  // O Kalodata fecha o agregado de cada dia só no dia seguinte (em UTC), então
-  // "ontem" (BRT) ainda pode estar com dados parciais. A própria UI da
-  // Kalodata pula pra D-2 — confirmado comparando: pra days=30 num "hoje"=14/05
-  // a fonte mostra 13/04 ~ 12/05, e antes daqui mandávamos 14/04 ~ 13/05 (off-by-one).
-  // Esse offset gerava ~R$4-6k de diferença em vídeos sensíveis ao último dia.
+  // O Kalodata fecha o agregado de cada dia sÃ³ no dia seguinte (em UTC), entÃ£o
+  // "ontem" (BRT) ainda pode estar com dados parciais. A prÃ³pria UI da
+  // Kalodata pula pra D-2 â confirmado comparando: pra days=30 num "hoje"=14/05
+  // a fonte mostra 13/04 ~ 12/05, e antes daqui mandÃ¡vamos 14/04 ~ 13/05 (off-by-one).
+  // Esse offset gerava ~R$4-6k de diferenÃ§a em vÃ­deos sensÃ­veis ao Ãºltimo dia.
   const fmt = (d) => {
     const y = d.getFullYear()
     const m = String(d.getMonth() + 1).padStart(2, '0')
@@ -318,7 +318,7 @@ async function sendCookieExpiredAlert() {
   const { resend_api_key, email_from, email_to } = config
 
   if (!resend_api_key || !email_to) {
-    console.warn('[ALERT] Resend not configured — skipping alert. Set resend_api_key and email_to in config.json.')
+    console.warn('[ALERT] Resend not configured â skipping alert. Set resend_api_key and email_to in config.json.')
     return false
   }
 
@@ -364,7 +364,7 @@ cron.schedule(config.cookie_check_cron, async () => {
   console.log('[CRON] Checking cookie health...')
   const valid = checkSession()
   if (!valid) {
-    console.warn('[CRON] Session invalid — sending alert')
+    console.warn('[CRON] Session invalid â sending alert')
     await sendCookieExpiredAlert().catch((e) => console.error('[CRON] Email error:', e.message))
   } else {
     console.log('[CRON] Session OK')
@@ -614,14 +614,14 @@ app.get('/api/video/:id/url', (req, res) => {
  * @swagger
  * /api/video/{id}/total:
  *   get:
- *     summary: Métricas totais de um vídeo (views, receita, vendas)
+ *     summary: MÃ©tricas totais de um vÃ­deo (views, receita, vendas)
  *     tags: [Videos]
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
  *         schema: { type: string }
- *         description: ID do vídeo
+ *         description: ID do vÃ­deo
  *       - in: query
  *         name: days
  *         schema: { type: integer, default: 30, enum: [7, 30] }
@@ -630,7 +630,7 @@ app.get('/api/video/:id/url', (req, res) => {
  *         schema: { type: string, default: BR }
  *     responses:
  *       200:
- *         description: Métricas do vídeo (views, revenue, sale, new_followers, day_*)
+ *         description: MÃ©tricas do vÃ­deo (views, revenue, sale, new_followers, day_*)
  *       500:
  *         description: Erro interno
  */
@@ -802,7 +802,7 @@ app.get('/api/lives', (req, res) => {
  * @swagger
  * /api/creator/{id}/lives:
  *   get:
- *     summary: Lives de um criador (todas as transmissões no período)
+ *     summary: Lives de um criador (todas as transmissÃµes no perÃ­odo)
  *     tags: [Lives]
  *     parameters:
  *       - in: path
@@ -901,12 +901,12 @@ app.get('/api/shops', (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
-// Shop detail (criadores afiliados, produtos, vídeos, lives da loja)
+// Shop detail (criadores afiliados, produtos, vÃ­deos, lives da loja)
 // ---------------------------------------------------------------------------
 // Paths confirmados em 2026-05-15 via DevTools do Kalodata logado (loja
-// Barbour's Beauty). Os paths que parecem "iguais" em padrão (creator/queryList,
-// searchProducts, etc) na verdade NÃO existem pra shop — usamos as variantes
-// específicas: searchCooperativeCreators, product/queryList, searchVideos,
+// Barbour's Beauty). Os paths que parecem "iguais" em padrÃ£o (creator/queryList,
+// searchProducts, etc) na verdade NÃO existem pra shop â usamos as variantes
+// especÃ­ficas: searchCooperativeCreators, product/queryList, searchVideos,
 // searchLives.
 //
 // Payload base de TODOS os endpoints de listagem:
@@ -917,7 +917,7 @@ app.get('/api/shops', (req, res) => {
 
 /**
  * Helper: payload pros endpoints de overview (/total, /detail, /history).
- * INCLUI currency + region (esses 3 endpoints exigem; sem eles dá Invalid Parameter).
+ * INCLUI currency + region (esses 3 endpoints exigem; sem eles dÃ¡ Invalid Parameter).
  */
 function shopOverviewBody(id, country, range, extra = {}) {
   const cfg = COUNTRY_CONFIG[country] || COUNTRY_CONFIG.BR
@@ -933,12 +933,12 @@ function shopOverviewBody(id, country, range, extra = {}) {
 
 /**
  * Helper: payload pros endpoints de listagem paginada (creators, products,
- * videos, lives, new-products). NÃO inclui currency/region — Kalodata
+ * videos, lives, new-products). NÃO inclui currency/region â Kalodata
  * rejeita com `code: 501 "Invalid Parameter"` se enviar esses campos
  * nesses endpoints (confirmado empiricamente em 2026-05-15).
  *
- * Kalodata também rejeita pageSize < 10 nesses endpoints. Clampa pro
- * mínimo 10 (defensivo — frontend já usa 10/20).
+ * Kalodata tambÃ©m rejeita pageSize < 10 nesses endpoints. Clampa pro
+ * mÃ­nimo 10 (defensivo â frontend jÃ¡ usa 10/20).
  */
 function shopListBody(id, range, extra = {}) {
   const clamped = { ...extra }
@@ -979,7 +979,7 @@ app.get('/api/shop/:id/total', (req, res) => {
  * @swagger
  * /api/shop/{id}/info:
  *   get:
- *     summary: Dados gerais da loja (nome, tipo, região, categoria)
+ *     summary: Dados gerais da loja (nome, tipo, regiÃ£o, categoria)
  *     tags: [Shops]
  */
 app.get('/api/shop/:id/info', (req, res) => {
@@ -1057,7 +1057,7 @@ app.get('/api/shop/:id/products', (req, res) => {
  * @swagger
  * /api/shop/{id}/videos:
  *   get:
- *     summary: Vídeos e anúncios que venderam produtos da loja (campo `ad: 1` = anúncio)
+ *     summary: VÃ­deos e anÃºncios que venderam produtos da loja (campo `ad: 1` = anÃºncio)
  *     tags: [Shops, Videos]
  */
 app.get('/api/shop/:id/videos', (req, res) => {
@@ -1116,7 +1116,7 @@ app.get('/api/shop/:id/lives', (req, res) => {
  * @swagger
  * /api/shop/{id}/new-products:
  *   get:
- *     summary: Novos produtos lançados pela loja no período
+ *     summary: Novos produtos lanÃ§ados pela loja no perÃ­odo
  *     tags: [Shops, Products]
  */
 app.get('/api/shop/:id/new-products', (req, res) => {
@@ -1143,7 +1143,7 @@ app.get('/api/shop/:id/new-products', (req, res) => {
  * @swagger
  * /api/shop/{id}/history:
  *   get:
- *     summary: Série temporal de métricas da loja
+ *     summary: SÃ©rie temporal de mÃ©tricas da loja
  *     tags: [Shops]
  */
 app.get('/api/shop/:id/history', (req, res) => {
@@ -1214,7 +1214,7 @@ app.get('/api/product/:id/images', (req, res) => {
   try {
     const country = parseCountry(req)
     const { id } = req.params
-    // Upstream usa GET com query string (não POST).
+    // Upstream usa GET com query string (nÃ£o POST).
     const data = kaloGet(`/product/detail/getImages?productId=${encodeURIComponent(id)}`, country)
     res.json(data)
   } catch (e) {
@@ -1226,7 +1226,7 @@ app.get('/api/product/:id/images', (req, res) => {
  * @swagger
  * /api/product/{id}/history:
  *   get:
- *     summary: Série temporal diária do produto (para gráfico)
+ *     summary: SÃ©rie temporal diÃ¡ria do produto (para grÃ¡fico)
  *     description: Retorna lista com revenue/sale/video_revenue/live_revenue/unit_price/creatorConversionRatio por partition_day.
  *     tags: [Products]
  *     parameters:
@@ -1238,7 +1238,7 @@ app.get('/api/product/:id/images', (req, res) => {
  *         name: days
  *         schema: { type: integer, default: 7, enum: [7, 30] }
  *     responses:
- *       200: { description: Série temporal }
+ *       200: { description: SÃ©rie temporal }
  *       500: { description: Erro interno }
  */
 app.get('/api/product/:id/history', (req, res) => {
@@ -1258,8 +1258,8 @@ app.get('/api/product/:id/history', (req, res) => {
  * @swagger
  * /api/product/{id}/analysis:
  *   get:
- *     summary: Atributos + características-chave do produto (AI features)
- *     description: Retorna highlights (key_word + region_text) e attributes (key/value) — fonte de "Características-chave" e "Atributos".
+ *     summary: Atributos + caracterÃ­sticas-chave do produto (AI features)
+ *     description: Retorna highlights (key_word + region_text) e attributes (key/value) â fonte de "CaracterÃ­sticas-chave" e "Atributos".
  *     tags: [Products]
  *     parameters:
  *       - in: path
@@ -1393,7 +1393,7 @@ app.get('/api/product/:id/lives', (req, res) => {
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
-    // Kalodata rejeita pageSize<10 com Invalid Parameter (mesmo padrão dos
+    // Kalodata rejeita pageSize<10 com Invalid Parameter (mesmo padrÃ£o dos
     // endpoints de shop detail). Clampa defensivamente.
     const pageSize = Math.max(10, parseInt(req.query.pageSize) || 10)
     const sortField = req.query.sortField || 'revenue'
@@ -1622,7 +1622,7 @@ app.get('/api/search/products', (req, res) => {
  * @swagger
  * /api/search/videos:
  *   get:
- *     summary: Buscar vídeos por título (fulltext)
+ *     summary: Buscar vÃ­deos por tÃ­tulo (fulltext)
  *     tags: [Videos]
  *     parameters:
  *       - in: query
@@ -1630,7 +1630,7 @@ app.get('/api/search/products', (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *         description: Termo de busca (título do vídeo)
+ *         description: Termo de busca (tÃ­tulo do vÃ­deo)
  *       - in: query
  *         name: country
  *         schema: { type: string, default: BR }
@@ -1642,7 +1642,7 @@ app.get('/api/search/products', (req, res) => {
  *         schema: { type: integer, default: 20 }
  *     responses:
  *       200:
- *         description: Lista de vídeos encontrados
+ *         description: Lista de vÃ­deos encontrados
  */
 app.get('/api/search/videos', (req, res) => {
   try {
@@ -2112,7 +2112,7 @@ app.get('/api/health', (_req, res) => {
  * @swagger
  * /api/probe-country:
  *   get:
- *     summary: Validar se um country code é aceito pelo upstream Kalodata
+ *     summary: Validar se um country code Ã© aceito pelo upstream Kalodata
  *     tags: [Session]
  *     parameters:
  *       - in: query
@@ -2126,7 +2126,7 @@ app.get('/api/probe-country', (req, res) => {
   const country = parseCountry(req)
   const t0 = Date.now()
   try {
-    // Bate num endpoint barato (top 1 produto, sem agregações pesadas) só pra
+    // Bate num endpoint barato (top 1 produto, sem agregaÃ§Ãµes pesadas) sÃ³ pra
     // validar que o upstream aceita o country code dado e responde com data.
     const range = getDateRange(7)
     const data = kaloPost('/product/queryList', {
@@ -2197,10 +2197,10 @@ app.get('/api/probe-country', (req, res) => {
  */
 // In-memory cache for insight endpoints. Upstream (clip.kalowave.com) pode
 // levar 30s+ pra responder script-analysis; transcript nunca muda por videoId,
-// e a URL expira só quando o CDN gira. TTLs: transcript 7d, url 30min.
+// e a URL expira sÃ³ quando o CDN gira. TTLs: transcript 7d, url 30min.
 const INSIGHT_TRANSCRIPT_TTL = 7 * 24 * 60 * 60 * 1000
 const INSIGHT_URL_TTL = 30 * 60 * 1000
-const insightCache = new Map() // key → { data, expiresAt }
+const insightCache = new Map() // key â { data, expiresAt }
 
 function insightCacheGet(key) {
   const entry = insightCache.get(key)
@@ -2577,6 +2577,375 @@ app.get('/api/creator/search/:handle', (req, res) => {
     }
 
     res.json({ success: false, message: 'Creator not found on TikTok' })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+
+// ---------------------------------------------------------------------------
+// Live (Livestream) detail endpoints
+// /api/live/:id/detail      → combina /livestream/detail + /livestream/detail/total
+// /api/live/:id/products    → /livestream/detail/product/queryList + count
+// /api/live/:id/chart       → /livestream/detail/history
+// /api/live/:id/categories  → /livestream/detail/productStrategy
+//
+// Paths confirmados via DevTools do Kalodata em 2026-05-27.
+// Para lives encerradas (finish_time no passado) os dados nao mudam mais,
+// entao usamos TTL longo (6h para detail/products, 24h para chart/categories).
+// Para lives ativas (finish_time nulo ou no futuro) usamos TTL curto (5 min).
+// ---------------------------------------------------------------------------
+
+const LIVE_CACHE_SHORT = 5 * 60 * 1000          // 5 min — live ativa
+const LIVE_CACHE_DETAIL = 6 * 60 * 60 * 1000     // 6 h  — detail / products
+const LIVE_CACHE_LONG   = 24 * 60 * 60 * 1000    // 24 h — chart / categories
+const liveCache = new Map()
+
+function liveCacheGet(key) {
+  const entry = liveCache.get(key)
+  if (!entry) return null
+  if (Date.now() >= entry.expiresAt) {
+    liveCache.delete(key)
+    return null
+  }
+  return entry.data
+}
+
+function liveCacheSet(key, data, ttl) {
+  liveCache.set(key, { data, expiresAt: Date.now() + ttl })
+}
+
+// Determina o TTL adequado dado o finish_time da live (unix segundos ou null).
+function liveTtl(finishTimeUnix, baseTtl) {
+  if (!finishTimeUnix) return LIVE_CACHE_SHORT
+  const finishMs = parseInt(finishTimeUnix) * 1000
+  if (Date.now() < finishMs) return LIVE_CACHE_SHORT
+  return baseTtl
+}
+
+// Converte timestamp da live para YYYY-MM-DD
+function liveTimestampToDate(ts) {
+  const d = new Date(parseInt(ts) * 1000)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return y + '-' + m + '-' + dd
+}
+
+// Parseia finish_time que pode vir como unix (inteiro/string) ou "2026/05/26 20:05:27"
+function parseFinishTime(ft) {
+  if (!ft) return null
+  if (/^\d{10,}$/.test(String(ft))) return parseInt(ft)
+  const parsed = new Date(String(ft).replace(/\//g, '-').replace(' ', 'T') + ':00')
+  return isNaN(parsed.getTime()) ? null : Math.floor(parsed.getTime() / 1000)
+}
+
+// Parseia create_time que vem como "2026/05/22 07:05:00"
+function parseCreateTime(ct) {
+  if (!ct) return null
+  if (/^\d{10,}$/.test(String(ct))) return parseInt(ct)
+  const parsed = new Date(String(ct).replace(/\//g, '-').replace(' ', 'T') + ':00')
+  return isNaN(parsed.getTime()) ? null : Math.floor(parsed.getTime() / 1000)
+}
+
+/**
+ * @swagger
+ * /api/live/{id}/detail:
+ *   get:
+ *     summary: Cabecalho da live (criador, categorias, janela, duracao, metricas)
+ *     tags: [Lives]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *         description: ID da live no TikTok
+ *     responses:
+ *       200: { description: Dados completos da live }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/live/:id/detail', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const cacheKey = `live:detail:${id}:${country}`
+
+    const cached = liveCacheGet(cacheKey)
+    if (cached) return res.json({ success: true, data: cached, cached: true })
+
+    // 1. Dados base da live
+    const baseResp = kaloPost('/livestream/detail', { id }, country)
+    if (!baseResp || !baseResp.success) {
+      return res.status(502).json({ success: false, message: baseResp?.message || 'upstream error on /livestream/detail' })
+    }
+    const base = baseResp.data?.base || baseResp.data || {}
+
+    // 2. Metricas totais (revenue, sale, views, unit_price) — requer date range
+    const createUnix = parseCreateTime(base.create_time)
+    const finishUnix = parseFinishTime(base.finish_time)
+
+    let totalData = {}
+    if (createUnix) {
+      const startDate = liveTimestampToDate(createUnix)
+      const today = new Date()
+      const endUnix = finishUnix || Math.floor(today.getTime() / 1000)
+      const endDate = liveTimestampToDate(Math.min(endUnix, Math.floor(today.getTime() / 1000)))
+      try {
+        const totalResp = kaloPost('/livestream/detail/total', { id, startDate, endDate }, country)
+        if (totalResp && totalResp.success) totalData = totalResp.data || {}
+      } catch (_) { /* best-effort */ }
+    }
+
+    const data = {
+      id,
+      title: base.title || null,
+      handle: base.handle || null,
+      nickname: base.nickname || base.handle || null,
+      creator_uid: base.creator_id || base.uid || null,
+      avatar_url: base.avatar_url || null,
+      categories: base.main_category || [],
+      main_category_ids: base.main_category || [],
+      start_time: base.create_time || null,
+      finish_time: base.finish_time || null,
+      duration: base.duration || null,
+      duration_seconds: base.record_duration ? Math.round(base.record_duration / 1000) : null,
+      products_count: parseInt(base.product_count) || 0,
+      revenue: totalData.revenue || base.revenue || null,
+      revenue_raw: null,
+      sale: totalData.sale || (base.sale ? String(base.sale) : null),
+      views: totalData.views || (base.views ? String(base.views) : null),
+      views_raw: typeof base.views === 'number' ? base.views : null,
+      unit_price: totalData.unit_price || base.unit_price || null,
+      screenshot_url: base.screenshotUrl || null,
+      short_url: base.shortUrl || null,
+      country: country,
+      currency: headersForCountry(country).currency,
+    }
+
+    const ttl = liveTtl(finishUnix, LIVE_CACHE_DETAIL)
+    liveCacheSet(cacheKey, data, ttl)
+
+    res.json({ success: true, data, cached: false })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/live/{id}/products:
+ *   get:
+ *     summary: Lista paginada de produtos vendidos na live
+ *     tags: [Lives]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 10 }
+ *       - in: query
+ *         name: sortField
+ *         schema: { type: string, default: revenue, enum: [revenue, sale, unit_price] }
+ *     responses:
+ *       200: { description: Produtos da live }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/live/:id/products', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const page = parseInt(req.query.page) || 1
+    const pageSize = Math.min(parseInt(req.query.pageSize) || 10, 100)
+    const sortField = req.query.sortField || 'revenue'
+
+    const cacheKey = `live:products:${id}:${country}:${page}:${pageSize}:${sortField}`
+    const cached = liveCacheGet(cacheKey)
+    if (cached) return res.json({ success: true, data: cached.items, total: cached.total, page, pageSize, cached: true })
+
+    // Obter date range a partir do detalhe da live
+    let startDate, endDate, finishUnix = null
+
+    const detailCacheKey = `live:detail:${id}:${country}`
+    const detailCached = liveCacheGet(detailCacheKey)
+    if (detailCached) {
+      const s = parseCreateTime(detailCached.start_time)
+      const f = parseFinishTime(detailCached.finish_time)
+      if (s) startDate = liveTimestampToDate(s)
+      if (f) { finishUnix = f; endDate = liveTimestampToDate(f) }
+    }
+
+    // Fallback: buscar do upstream
+    if (!startDate) {
+      try {
+        const baseResp = kaloPost('/livestream/detail', { id }, country)
+        const base = baseResp?.data?.base || baseResp?.data || {}
+        const s = parseCreateTime(base.create_time)
+        const f = parseFinishTime(base.finish_time)
+        if (s) startDate = liveTimestampToDate(s)
+        if (f) { finishUnix = f; endDate = liveTimestampToDate(f) }
+      } catch (_) { /* best-effort */ }
+    }
+
+    if (!endDate) endDate = new Date().toISOString().slice(0, 10)
+    if (!startDate) startDate = endDate
+
+    const payload = { id, startDate, endDate, pageNo: page, pageSize, sort: [{ field: sortField, type: 'DESC' }] }
+    const listResp = kaloPost('/livestream/detail/product/queryList', payload, country)
+    if (!listResp || !listResp.success) {
+      return res.status(502).json({ success: false, message: listResp?.message || 'upstream error on product/queryList' })
+    }
+
+    // Contagem total
+    let total = null
+    try {
+      const countResp = kaloPost('/livestream/detail/product/count', { id, startDate, endDate }, country)
+      if (countResp && countResp.success) total = countResp.data
+    } catch (_) { /* best-effort */ }
+
+    const items = (listResp.data || []).map((p, i) => ({
+      rank: (page - 1) * pageSize + i + 1,
+      id: p.id || null,
+      name: p.product_title || null,
+      image_url: p.image_url || null,
+      revenue: p.revenue || null,
+      revenue_raw: null,
+      sale: p.sale || null,
+      unit_price: p.unit_price || null,
+    }))
+
+    const ttl = liveTtl(finishUnix, LIVE_CACHE_DETAIL)
+    liveCacheSet(cacheKey, { items, total }, ttl)
+
+    res.json({ success: true, data: items, total, page, pageSize, cached: false })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/live/{id}/chart:
+ *   get:
+ *     summary: Serie temporal de receita ao longo da live
+ *     tags: [Lives]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Pontos de receita ao longo do tempo }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/live/:id/chart', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const cacheKey = `live:chart:${id}:${country}`
+
+    const cached = liveCacheGet(cacheKey)
+    if (cached) return res.json({ success: true, data: cached, cached: true })
+
+    const resp = kaloPost('/livestream/detail/history', { id }, country)
+    if (!resp || !resp.success) {
+      return res.status(502).json({ success: false, message: resp?.message || 'upstream error on /livestream/detail/history' })
+    }
+
+    const raw = resp.data || []
+
+    // Intervalo mediano entre pontos (segundos)
+    let intervalSeconds = 300
+    if (raw.length >= 2) {
+      const diffs = []
+      for (let i = 1; i < Math.min(raw.length, 20); i++) {
+        const d = parseInt(raw[i].finish_time) - parseInt(raw[i - 1].finish_time)
+        if (d > 0) diffs.push(d)
+      }
+      if (diffs.length > 0) {
+        diffs.sort((a, b) => a - b)
+        intervalSeconds = diffs[Math.floor(diffs.length / 2)]
+      }
+    }
+
+    const points = raw.map(p => ({
+      ts: new Date(parseInt(p.finish_time) * 1000).toISOString(),
+      revenue: parseFloat(p.revenue) || 0,
+      sale: parseInt(p.total_user_incre) || 0,
+    }))
+
+    // Se o ultimo ponto e mais de 1h atras, a live esta encerrada -> TTL 24h
+    const lastPoint = raw[raw.length - 1]
+    const lastTs = lastPoint ? parseInt(lastPoint.finish_time) * 1000 : 0
+    const isFinished = lastTs > 0 && (Date.now() - lastTs) > 3600 * 1000
+    const ttl = isFinished ? LIVE_CACHE_LONG : LIVE_CACHE_SHORT
+
+    const data = { points, interval_seconds: intervalSeconds }
+    liveCacheSet(cacheKey, data, ttl)
+
+    res.json({ success: true, data, cached: false })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/live/{id}/categories:
+ *   get:
+ *     summary: Breakdown de receita por categoria (com total agregado)
+ *     tags: [Lives]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Receita por categoria }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/live/:id/categories', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const cacheKey = `live:categories:${id}:${country}`
+
+    const cached = liveCacheGet(cacheKey)
+    if (cached) return res.json({ success: true, data: cached, cached: true })
+
+    const resp = kaloPost('/livestream/detail/productStrategy', { id }, country)
+    if (!resp || !resp.success) {
+      return res.status(502).json({ success: false, message: resp?.message || 'upstream error on /livestream/detail/productStrategy' })
+    }
+
+    const raw = resp.data || []
+
+    // Item com id="-1" e percentage=100 e o total de todas as categorias
+    const totalItem = raw.find(c => String(c.id) === '-1' || String(c.percentage) === '100')
+    const items = raw
+      .filter(c => String(c.id) !== '-1' && String(c.id) !== '0' && c.cate_id !== null && c.cate_id !== 'Others')
+      .map(c => ({
+        id: String(c.id),
+        label: c.cate_id || String(c.id),
+        revenue: c.revenue || null,
+        revenue_raw: null,
+      }))
+
+    const data = {
+      total: {
+        label: 'Total das categorias',
+        revenue: totalItem ? totalItem.revenue : null,
+        revenue_raw: null,
+      },
+      items,
+    }
+
+    liveCacheSet(cacheKey, data, LIVE_CACHE_LONG)
+    res.json({ success: true, data, cached: false })
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
   }
