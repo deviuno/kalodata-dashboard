@@ -1821,7 +1821,25 @@ app.get('/api/creator/:id/detail', (req, res) => {
   try {
     const country = parseCountry(req)
     const { id } = req.params
-    const data = kaloPost('/creator/detail', { country, id }, country)
+
+    // Accept explicit startDate/endDate or ?days=N (default 30d)
+    let startDate, endDate
+    if (req.query.startDate && req.query.endDate) {
+      startDate = req.query.startDate
+      endDate = req.query.endDate
+    } else {
+      const days = parseInt(req.query.days) || 30
+      const range = getDateRange(days)
+      startDate = range.startDate
+      endDate = range.endDate
+    }
+
+    const cacheKey = `creator:detail:${id}:${country}:${startDate}:${endDate}`
+    const cached = cache.get(cacheKey)
+    if (cached) return res.json({ ...cached, cached: true })
+
+    const data = kaloPost('/creator/detail', { country, id, startDate, endDate }, country)
+    if (data && data.success) cache.set(cacheKey, data, 86400)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
