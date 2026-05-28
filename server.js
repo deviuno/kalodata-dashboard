@@ -1835,11 +1835,11 @@ app.get('/api/creator/:id/detail', (req, res) => {
     }
 
     const cacheKey = `creator:detail:${id}:${country}:${startDate}:${endDate}`
-    const cached = cache.get(cacheKey)
+    const cached = insightCacheGet(cacheKey)
     if (cached) return res.json({ ...cached, cached: true })
 
     const data = kaloPost('/creator/detail', { country, id, startDate, endDate }, country)
-    if (data && data.success) cache.set(cacheKey, data, 86400)
+    if (data && data.success) insightCacheSet(cacheKey, data, 86400000)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
