@@ -65,26 +65,3 @@ jobs:
           curl -fsS http://localhost:4001/api/health || (echo "Health check falhou"; exit 1)
           echo "==> Deploy OK"
           EOF
-      - name: Acceptance tests (viewers_count + categoryId)
-        run: |
-          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash <<'EOF'
-          ID=7642655011708635905
-
-          echo "=== Ajuste 1: viewers_count ==="
-          curl -s "http://localhost:4001/api/live/$ID/detail" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']; print('viewers_count:', d.get('viewers_count'), 'label:', d.get('viewers_count_label'))"
-
-          echo "=== All category IDs in this live ==="
-          curl -s "http://localhost:4001/api/live/$ID/categories" | python3 -c "import sys,json; r=json.load(sys.stdin); cats=r.get('data',{}).get('items',[]); [print('cat_id:', c.get('id'), 'name:', c.get('label')) for c in cats]"
-
-          echo "=== Products without filter ==="
-          curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=100&sortField=revenue" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total:', r.get('total'), 'data_len:', len(r.get('data',[])))"
-
-          echo "=== Products with cateValue 604579 ==="
-          curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=100&sortField=revenue&categoryId=604579" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total:', r.get('total'), 'data_len:', len(r.get('data',[])))"
-
-          echo "=== Products with cateValue 999999 (non-existent) ==="
-          curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=100&sortField=revenue&categoryId=999999" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total:', r.get('total'), 'data_len:', len(r.get('data',[])))"
-
-          echo "=== DONE ==="
-          EOF
-
