@@ -65,3 +65,18 @@ jobs:
           curl -fsS http://localhost:4001/api/health || (echo "Health check falhou"; exit 1)
           echo "==> Deploy OK"
           EOF
+
+      - name: Acceptance test - creator detail
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            echo "==> Testing /api/creator/:id/detail"
+            RESULT=$(curl -s "http://localhost:4001/api/creator/108068417546379264/detail")
+            echo "Response: $RESULT"
+            SUCCESS=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('success',''))")
+            echo "success=$SUCCESS"
+            if [ "$SUCCESS" = "True" ] || [ "$SUCCESS" = "true" ]; then echo "TEST PASSED"; else echo "TEST FAILED"; exit 1; fi
