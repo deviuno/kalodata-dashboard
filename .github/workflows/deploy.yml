@@ -92,8 +92,11 @@ jobs:
           NO_FILTER=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=20&sortField=revenue" | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
           WITH_FILTER=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=20&sortField=revenue&categoryId=$CAT_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
           echo "Sem filtro: $NO_FILTER | Com filtro categoria $CAT_ID: $WITH_FILTER"
-          # Also get all categories for this live
-          echo "=== Categories para esta live ==="
-          curl -s "http://localhost:4001/api/live/$ID/categories" | python3 -c "import sys,json; d=json.load(sys.stdin); cats=d.get('data',[]); print('Total cats:', len(cats)); [print(c.get('id'), c.get('name'), c.get('count')) for c in cats[:5]]"
-          echo "=== DONE ==="
-          EOF
+                    # Also test with a non-existent category to verify filter works
+          echo "=== Test: categoria inexistente 999999 ==="
+          FAKE_CAT=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=20&sortField=revenue&categoryId=999999" | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
+          echo "Com categoria 999999 (inexistente): $FAKE_CAT"
+          # Also show categories
+          echo "=== Categories desta live ==="
+          curl -s "http://localhost:4001/api/live/$ID/categories" | python3 -c "import sys,json; r=json.load(sys.stdin); cats=r.get('data',[]); print('Total cats:', len(cats)); list(map(lambda c: print(c.get('id'), c.get('name'), c.get('count')), cats[:5]))"
+          echo "=== DONE ===" EOF
