@@ -2717,6 +2717,8 @@ app.get('/api/live/:id/detail', (req, res) => {
       sale: totalData.sale || (base.sale ? String(base.sale) : null),
       views: totalData.views || (base.views ? String(base.views) : null),
       views_raw: typeof base.views === 'number' ? base.views : null,
+      viewers_count: parseInt(base.total_user_cnt || base.audience_count || base.buyer_count || 0) || null,
+      viewers_count_label: base.total_user_cnt != null ? String(base.total_user_cnt) : (base.audience_count != null ? String(base.audience_count) : (base.buyer_count != null ? String(base.buyer_count) : null)),
       unit_price: totalData.unit_price || base.unit_price || null,
       screenshot_url: base.screenshotUrl || null,
       short_url: base.shortUrl || null,
@@ -2764,8 +2766,9 @@ app.get('/api/live/:id/products', (req, res) => {
     const page = parseInt(req.query.page) || 1
     const pageSize = Math.min(parseInt(req.query.pageSize) || 10, 100)
     const sortField = req.query.sortField || 'revenue'
+    const categoryId = req.query.categoryId || ''
 
-    const cacheKey = `live:products:${id}:${country}:${page}:${pageSize}:${sortField}`
+    const cacheKey = `live:products:${id}:${country}:${page}:${pageSize}:${sortField}:${categoryId}`
     const cached = liveCacheGet(cacheKey)
     if (cached) return res.json({ success: true, data: cached.items, total: cached.total, page, pageSize, cached: true })
 
@@ -2797,6 +2800,7 @@ app.get('/api/live/:id/products', (req, res) => {
     if (!startDate) startDate = endDate
 
     const payload = { id, startDate, endDate, pageNo: page, pageSize, sort: [{ field: sortField, type: 'DESC' }] }
+    if (categoryId) payload.cateValue = [categoryId]
     const listResp = kaloPost('/livestream/detail/product/queryList', payload, country)
     if (!listResp || !listResp.success) {
       return res.status(502).json({ success: false, message: listResp?.message || 'upstream error on product/queryList' })
@@ -2805,7 +2809,7 @@ app.get('/api/live/:id/products', (req, res) => {
     // Contagem total
     let total = null
     try {
-      const countResp = kaloPost('/livestream/detail/product/count', { id, startDate, endDate }, country)
+      const countResp = kaloPost('/livestream/detail/product/count', { id, startDate, endDate, ...(categoryId ? { cateValue: [categoryId] } : {}) }, country)
       if (countResp && countResp.success) total = countResp.data
     } catch (_) { /* best-effort */ }
 
