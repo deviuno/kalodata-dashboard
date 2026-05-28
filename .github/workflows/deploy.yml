@@ -71,16 +71,20 @@ jobs:
           ID=7642655011708635905
 
           echo "=== Ajuste 1: viewers_count ==="
-          curl -s "http://localhost:4001/api/live/$ID/detail" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']; print('viewers_count:', d.get('viewers_count'), 'viewers_count_label:', d.get('viewers_count_label'))"
+          curl -s "http://localhost:4001/api/live/$ID/detail" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']; print('viewers_count:', d.get('viewers_count'), 'label:', d.get('viewers_count_label'))"
 
-          echo "=== Categorias disponíveis ==="
-          curl -s "http://localhost:4001/api/live/$ID/categories" | python3 -c "import sys,json; r=json.load(sys.stdin); cats=r.get('data',[]); [print('cat:', c.get('id'), c.get('name'), 'count:', c.get('count')) for c in cats]"
+          echo "=== Structure of /categories response ==="
+          CATS_RESP=$(curl -s "http://localhost:4001/api/live/$ID/categories")
+          echo "$CATS_RESP" | python3 -c "import sys,json; r=json.load(sys.stdin); cats=r.get('data',[]); print('Type of cats:', type(cats).__name__); print('First 3 items:', cats[:3] if isinstance(cats, list) else str(cats)[:200])"
 
-          echo "=== Ajuste 2: produtos sem filtro ==="
-          curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=5&sortField=revenue" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total:', r['total'], 'items:', len(r.get('data',[])))"
+          echo "=== Ajuste 2: categoryId filter - raw response inspection ==="
+          echo "--- Sem filtro (pageSize=100) ---"
+          NO_RESP=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=100&sortField=revenue")
+          echo "$NO_RESP" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total:', r.get('total'), 'data_len:', len(r.get('data',[])))"
 
-          echo "=== Ajuste 2: produtos com filtro 604579 ==="
-          curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=5&sortField=revenue&categoryId=604579" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total:', r['total'], 'items:', len(r.get('data',[])))"
+          echo "--- Com filtro 604579 (pageSize=100) ---"
+          WITH_RESP=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=100&sortField=revenue&categoryId=604579")
+          echo "$WITH_RESP" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total:', r.get('total'), 'data_len:', len(r.get('data',[])))"
 
           echo "=== DONE ==="
           EOF
