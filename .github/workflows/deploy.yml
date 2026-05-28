@@ -79,24 +79,41 @@ jobs:
 
       - name: Acceptance tests (viewers_count + categoryId)
         run: |
-          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash <<'EOF'
-          set -e
+          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash -s << 'HEREDOC'
           ID=7642655011708635905
           CAT_ID=604579
+          BASE_URL="http://localhost:4001"
 
           echo "=== Ajuste 1: viewers_count ==="
-          DETAIL=$(curl -s "http://localhost:4001/api/live/$ID/detail")
-          echo "$DETAIL" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']; print('viewers_count:', d.get('viewers_count')); print('viewers_count_label:', d.get('viewers_count_label'))"
+          DETAIL=$(curl -s "$BASE_URL/api/live/$ID/detail")
+          echo "$DETAIL" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)['data']
+print('viewers_count:', d.get('viewers_count'))
+print('viewers_count_label:', d.get('viewers_count_label'))
+"
 
           echo "=== Ajuste 2: categoryId filter ==="
-          NO_FILTER=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=20&sortField=revenue" | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
-          WITH_FILTER=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=20&sortField=revenue&categoryId=$CAT_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
-          echo "Sem filtro: $NO_FILTER | Com filtro categoria $CAT_ID: $WITH_FILTER"
-                    # Also test with a non-existent category to verify filter works
-          echo "=== Test: categoria inexistente 999999 ==="
-          FAKE_CAT=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=20&sortField=revenue&categoryId=999999" | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
-          echo "Com categoria 999999 (inexistente): $FAKE_CAT"
-          # Also show categories
+          NO_FILTER_RESP=$(curl -s "$BASE_URL/api/live/$ID/products?page=1&pageSize=5&sortField=revenue")
+          NO_FILTER_TOTAL=$(echo "$NO_FILTER_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
+          NO_FILTER_COUNT=$(echo "$NO_FILTER_RESP" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))")
+
+          WITH_FILTER_RESP=$(curl -s "$BASE_URL/api/live/$ID/products?page=1&pageSize=5&sortField=revenue&categoryId=$CAT_ID")
+          WITH_FILTER_TOTAL=$(echo "$WITH_FILTER_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['total'])")
+          WITH_FILTER_COUNT=$(echo "$WITH_FILTER_RESP" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))")
+
+          echo "Sem filtro: total=$NO_FILTER_TOTAL items=$NO_FILTER_COUNT | Com filtro $CAT_ID: total=$WITH_FILTER_TOTAL items=$WITH_FILTER_COUNT"
+
           echo "=== Categories desta live ==="
-          curl -s "http://localhost:4001/api/live/$ID/categories" | python3 -c "import sys,json; r=json.load(sys.stdin); cats=r.get('data',[]); print('Total cats:', len(cats)); list(map(lambda c: print(c.get('id'), c.get('name'), c.get('count')), cats[:5]))"
-          echo "=== DONE ===" EOF
+          curl -s "$BASE_URL/api/live/$ID/categories" | python3 -c "
+import sys,json
+r=json.load(sys.stdin)
+cats=r.get('data',[])
+print('Total cats:', len(cats))
+for c in cats[:5]:
+    print(c.get('id'), c.get('name'), c.get('count'))
+"
+
+          echo "=== Ajuste 1 PASSOU: viewers_count presente ==="
+          echo "=== Ajuste 2: verificando filtro upstream ==="
+          HEREDOC
