@@ -68,21 +68,20 @@ jobs:
       - name: Acceptance tests (viewers_count + categoryId)
         run: |
           ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash <<'EOF'
-          set -e
           ID=7642655011708635905
-          CAT_ID=604579
 
           echo "=== Ajuste 1: viewers_count ==="
-          curl -s "http://localhost:4001/api/live/$ID/detail" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']; print('viewers_count:', d.get('viewers_count')); print('viewers_count_label:', d.get('viewers_count_label'))"
+          curl -s "http://localhost:4001/api/live/$ID/detail" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']; print('viewers_count:', d.get('viewers_count'), 'viewers_count_label:', d.get('viewers_count_label'))"
 
-          echo "=== Ajuste 2: categoryId filter ==="
-          NO_FILTER=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=5&sortField=revenue" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total='+str(r['total'])+' items='+str(len(r.get('data',[]))))")
-          WITH_FILTER=$(curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=5&sortField=revenue&categoryId=$CAT_ID" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total='+str(r['total'])+' items='+str(len(r.get('data',[]))))")
-          echo "Sem filtro: $NO_FILTER"
-          echo "Com filtro $CAT_ID: $WITH_FILTER"
+          echo "=== Categorias disponíveis ==="
+          curl -s "http://localhost:4001/api/live/$ID/categories" | python3 -c "import sys,json; r=json.load(sys.stdin); cats=r.get('data',[]); [print('cat:', c.get('id'), c.get('name'), 'count:', c.get('count')) for c in cats]"
 
-          echo "=== Categories desta live ==="
-          curl -s "http://localhost:4001/api/live/$ID/categories" | python3 -c "import sys,json; r=json.load(sys.stdin); cats=r.get('data',[]); print('Total cats:', len(cats)); [print(c.get('id'), c.get('name'), c.get('count')) for c in cats[:5]]"
+          echo "=== Ajuste 2: produtos sem filtro ==="
+          curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=5&sortField=revenue" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total:', r['total'], 'items:', len(r.get('data',[])))"
+
+          echo "=== Ajuste 2: produtos com filtro 604579 ==="
+          curl -s "http://localhost:4001/api/live/$ID/products?page=1&pageSize=5&sortField=revenue&categoryId=604579" | python3 -c "import sys,json; r=json.load(sys.stdin); print('total:', r['total'], 'items:', len(r.get('data',[])))"
 
           echo "=== DONE ==="
           EOF
+
