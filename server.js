@@ -1513,7 +1513,7 @@ app.get('/api/creator-avatar/:id', (req, res) => {
  * @swagger
  * /api/shop-avatar/{id}:
  *   get:
- *     summary: Proxy para logo/avatar da loja (KaloCDN + fallback via shop/detail)
+ *     summary: Proxy para logo da loja (KaloCDN tiktok.seller)
  *     tags: [Shops]
  *     parameters:
  *       - in: path
@@ -1521,103 +1521,24 @@ app.get('/api/creator-avatar/:id', (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *         description: ID numérico da loja
+ *         description: ID numérico da loja (mesmo id do /api/shops)
  *     responses:
  *       200:
- *         description: Imagem da logo da loja
+ *         description: Imagem PNG da logo da loja
  *         content:
- *           image/jpeg:
+ *           image/png:
  *             schema:
  *               type: string
  *               format: binary
- *       302:
- *         description: Redirect para URL da logo (CDN externo)
  *       404:
  *         description: Logo não encontrada
  */
-app.get('/api/shop-avatar/:id', async (req, res) => {
+app.get('/api/shop-avatar/:id', (req, res) => {
   const { id } = req.params
   if (!/^\d+$/.test(id)) return res.status(400).send('Invalid id')
-
-  const cacheKey = `shop_logo_${id}`
-
-  // Fast path: try well-known kalocdn path for shop logos
-  const cdnCached = imgCache.get(cacheKey)
-  if (cdnCached && Date.now() < cdnCached.expiresAt) {
-    if (cdnCached.redirect) return res.redirect(302, cdnCached.redirect)
-    res.set('Content-Type', cdnCached.contentType || 'image/jpeg')
-    res.set('Cache-Control', 'public, max-age=86400')
-    return res.send(cdnCached.buffer)
-  }
-
-  // Try direct CDN paths first (tiktok.shop/{id}/logo.png, avatar_medium.png)
-  const cdnPaths = [
-    `tiktok.shop/${id}/logo.png`,
-    `tiktok.shop/${id}/avatar_medium.png`,
-    `tiktok.shop/${id}/cover.png`,
-  ]
-
-  for (const cdnPath of cdnPaths) {
-    try {
-      const result = execFileSync('/usr/local/bin/curl_chrome116', [
-        '-s', '--max-time', '10', '-L',
-        `https://img.kalocdn.com/${cdnPath}`,
-      ], { timeout: 15000 })
-      if (result.length >= 100) {
-        imgCache.set(cacheKey, { buffer: result, contentType: 'image/png', expiresAt: Date.now() + 86400000 })
-        if (imgCache.size > 1000) imgCache.delete(imgCache.keys().next().value)
-        res.set('Content-Type', 'image/png')
-        res.set('Cache-Control', 'public, max-age=86400')
-        return res.send(result)
-      }
-    } catch { /* try next */ }
-  }
-
-  // Fallback: call shop/detail API to find logo URL in response fields
-  try {
-    const country = parseCountry(req)
-    const range = getDateRange(7)
-    const raw = kaloPost('/shop/detail', {
-      id,
-      ...range,
-      cateIds: [],
-      currency: (COUNTRY_CONFIG[country] || COUNTRY_CONFIG.BR).currency,
-      region: (COUNTRY_CONFIG[country] || COUNTRY_CONFIG.BR).country,
-    }, country)
-
-    const shopData = raw?.data || raw
-    // Try known field names for shop logo
-    const logoUrl = shopData?.shop_logo || shopData?.logo || shopData?.avatar ||
-                    shopData?.icon || shopData?.head_image || shopData?.shop_avatar ||
-                    shopData?.seller_logo || shopData?.image_url
-
-    if (logoUrl && typeof logoUrl === 'string' && logoUrl.startsWith('http')) {
-      // Cache redirect and send
-      imgCache.set(cacheKey, { redirect: logoUrl, expiresAt: Date.now() + 86400000 })
-      if (imgCache.size > 1000) imgCache.delete(imgCache.keys().next().value)
-      return res.redirect(302, logoUrl)
-    }
-
-    // Check if logoUrl is a kalocdn relative path
-    if (logoUrl && typeof logoUrl === 'string' && !logoUrl.startsWith('http')) {
-      try {
-        const result = execFileSync('/usr/local/bin/curl_chrome116', [
-          '-s', '--max-time', '10', '-L',
-          `https://img.kalocdn.com/${logoUrl}`,
-        ], { timeout: 15000 })
-        if (result.length >= 100) {
-          imgCache.set(cacheKey, { buffer: result, contentType: 'image/png', expiresAt: Date.now() + 86400000 })
-          if (imgCache.size > 1000) imgCache.delete(imgCache.keys().next().value)
-          res.set('Content-Type', 'image/png')
-          res.set('Cache-Control', 'public, max-age=86400')
-          return res.send(result)
-        }
-      } catch { /* fall through to 404 */ }
-    }
-  } catch { /* fall through to 404 */ }
-
-  res.status(404).send('Shop logo not found')
+  proxyKaloCDN(`tiktok.seller/${id}/logo.png`, `shop_${id}`, res)
 })
+
 // Temporary debug: probe CDN paths from server side (admin-only)
 app.get('/api/debug/cdn-probe/:id', (req, res) => {
   const { id } = req.params
