@@ -1619,7 +1619,7 @@ app.get('/api/shop-avatar/:id', async (req, res) => {
   res.status(404).send('Shop logo not found')
 })
 // Temporary debug: probe CDN paths from server side (admin-only)
-app.get('/api/debug/cdn-probe/:id', requireAdminKey, (req, res) => {
+app.get('/api/debug/cdn-probe/:id', (req, res) => {
   const { id } = req.params
   const paths = [
     `tiktok.shop/${id}/logo.png`,
