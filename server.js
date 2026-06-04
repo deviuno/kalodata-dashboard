@@ -293,7 +293,7 @@ function getDateRange(days) {
   end.setDate(end.getDate() - 2)
   const start = new Date(end)
   start.setDate(start.getDate() - (days - 1))
-  return { startDate: fmt(start), endDate: fmt(end) }
+  return { days, startDate: fmt(start), endDate: fmt(end) }
 }
 
 // ---------------------------------------------------------------------------
