@@ -1618,6 +1618,32 @@ app.get('/api/shop-avatar/:id', async (req, res) => {
 
   res.status(404).send('Shop logo not found')
 })
+// Temporary debug: probe CDN paths from server side (admin-only)
+app.get('/api/debug/cdn-probe/:id', requireAdminKey, (req, res) => {
+  const { id } = req.params
+  const paths = [
+    `tiktok.shop/${id}/logo.png`,
+    `tiktok.shop/${id}/avatar_medium.png`,
+    `tiktok.shop/${id}/cover.png`,
+    `tiktok.creator/${id}/avatar_medium.png`,
+    `tiktok.seller/${id}/logo.png`,
+    `tiktok.brand/${id}/logo.png`,
+  ]
+  const results = {}
+  for (const path of paths) {
+    try {
+      const buf = execFileSync('/usr/local/bin/curl_chrome116', [
+        '-s', '--max-time', '8', '-L',
+        `https://img.kalocdn.com/${path}`,
+      ], { timeout: 12000 })
+      results[path] = buf.length
+    } catch (e) {
+      results[path] = 'error: ' + e.message.substring(0, 50)
+    }
+  }
+  res.json(results)
+})
+
 
 
 // ---------------------------------------------------------------------------
