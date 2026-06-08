@@ -16,6 +16,86 @@ const PORT = parseInt(process.env.PORT) || 4001
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
 
 // ---------------------------------------------------------------------------
+// Proxy pool (Tarefa 1)
+// ---------------------------------------------------------------------------
+// Lê PROXY_LIST (vírgulas) ou PROXY_URL (único/rotativo) do ambiente.
+// Formato esperado: http://user:pass@host:port
+// Se vazio, funciona sem proxy (comportamento original).
+// ---------------------------------------------------------------------------
+const PROXY_URLS = (() => {
+  if (process.env.PROXY_LIST) {
+    return process.env.PROXY_LIST.split(',').map(p => p.trim()).filter(Boolean)
+  }
+  if (process.env.PROXY_URL) {
+    return [process.env.PROXY_URL.trim()]
+  }
+  return []
+})()
+
+let _proxyIdx = 0
+
+/** Retorna o próximo proxy da pool (round-robin), ou null se não configurado. */
+function getNextProxy () {
+  if (PROXY_URLS.length === 0) return null
+  const proxy = PROXY_URLS[_proxyIdx % PROXY_URLS.length]
+  _proxyIdx++
+  return proxy
+}
+
+/** Monta os args de proxy para curl: ['-x', 'url'] ou []. */
+function proxyCurlArgs (proxy) {
+  return proxy ? ['-x', proxy] : []
+}
+
+/** Jitter aleatório em ms para backoff gentil. */
+function jitter (base = 1000, spread = 1000) {
+  return base + Math.floor(Math.random() * spread)
+}
+
+function sleep (ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+// ---------------------------------------------------------------------------
+// Retry-até-completar para endpoints de ranking (Tarefa 2)
+// ---------------------------------------------------------------------------
+// Chama kaloPost repetidamente até obter >= targetCount itens
+// ou esgotar maxAttempts, retornando sempre a melhor resposta.
+// ---------------------------------------------------------------------------
+async function kaloPostWithRetry (path, bodyFn, country, opts = {}) {
+  const {
+    targetCount = 55,    // considera completo quando items >= targetCount
+    maxAttempts = 4,
+    baseDelay = 1500,
+  } = opts
+
+  let best = null
+  let bestCount = 0
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const proxy = getNextProxy()
+    const body = bodyFn()
+    try {
+      const data = kaloPost(path, body, country, proxy)
+      const items = data?.data || data?.list || data?.items || []
+      const count = Array.isArray(items) ? items.length : 0
+      console.log(`[ranking] ${path} attempt ${attempt}/${maxAttempts} proxy=${proxy ? proxy.replace(/:[^:@]*@/, ':***@') : 'none'} items=${count}`)
+      if (count > bestCount) { best = data; bestCount = count }
+      if (count >= targetCount) break
+    } catch (err) {
+      console.warn(`[ranking] ${path} attempt ${attempt} error: ${err.message}`)
+    }
+    if (attempt < maxAttempts) {
+      await sleep(jitter(baseDelay, baseDelay))
+    }
+  }
+
+  return best
+}
+
+
+
+// ---------------------------------------------------------------------------
 // Config helpers
 // ---------------------------------------------------------------------------
 function loadConfig() {
@@ -81,7 +161,7 @@ function setCookies(cookies) {
 // ---------------------------------------------------------------------------
 // Kalodata proxy helper
 // ---------------------------------------------------------------------------
-function kaloPost(path, body, country = DEFAULT_COUNTRY) {
+function kaloPost(path, body, country = DEFAULT_COUNTRY, proxyUrl = null) {
   const cookies = getCookies()
   if (!cookies) throw new Error('cookies.txt not found or empty')
 
@@ -107,9 +187,11 @@ function kaloPost(path, body, country = DEFAULT_COUNTRY) {
     '-X', 'POST',
     `https://www.kalodata.com${path}`,
     '--data-raw', JSON.stringify(body),
+    ...proxyCurlArgs(proxyUrl),
   ]
 
   const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  if (proxyUrl) console.log('[proxy] kaloPost', path, 'via', proxyUrl.replace(/:[^:@]*@/, ':***@'))
   if (result.trimStart().startsWith('<')) {
     throw new Error('Cloudflare challenge Ã¢ÂÂ atualize os cookies (precisa do cf_clearance)')
   }
@@ -463,7 +545,7 @@ app.get('/api/docs.json', (_req, res) => res.json(swaggerSpec))
  *       500:
  *         description: Erro interno
  */
-app.get('/api/products', (req, res) => {
+app.get('/api/products', async (req, res) => {
   try {
     const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
@@ -472,7 +554,7 @@ app.get('/api/products', (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/product/queryList', {
+    const data = await kaloPostWithRetry('/product/queryList', () => ({
       country,
       ...range,
       pageNo: page,
@@ -480,7 +562,7 @@ app.get('/api/products', (req, res) => {
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }, country)
+    }), country, { targetCount: Math.min(pageSize - 5, 55) })
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -687,7 +769,7 @@ app.get('/api/video/:id/total', (req, res) => {
  *       500:
  *         description: Erro interno
  */
-app.get('/api/videos', (req, res) => {
+app.get('/api/videos', async (req, res) => {
   try {
     const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
@@ -696,7 +778,7 @@ app.get('/api/videos', (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/video/queryList', {
+    const data = await kaloPostWithRetry('/video/queryList', () => ({
       country,
       ...range,
       pageNo: page,
@@ -704,7 +786,7 @@ app.get('/api/videos', (req, res) => {
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }, country)
+    }), country, { targetCount: Math.min(pageSize - 5, 55) })
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -774,7 +856,7 @@ app.get('/api/videos/hot', (req, res) => {
  *       200: { description: Lista de lives }
  *       500: { description: Erro interno }
  */
-app.get('/api/lives', (req, res) => {
+app.get('/api/lives', async (req, res) => {
   try {
     const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
@@ -783,7 +865,7 @@ app.get('/api/lives', (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/livestream/queryList', {
+    const data = await kaloPostWithRetry('/livestream/queryList', () => ({
       country,
       ...range,
       pageNo: page,
@@ -791,7 +873,7 @@ app.get('/api/lives', (req, res) => {
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }, country)
+    }), country, { targetCount: Math.min(pageSize - 3, 17) })
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -876,7 +958,7 @@ app.get('/api/creator/:id/lives', (req, res) => {
  *       200: { description: Lista de lojas }
  *       500: { description: Erro interno }
  */
-app.get('/api/shops', (req, res) => {
+app.get('/api/shops', async (req, res) => {
   try {
     const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
@@ -886,14 +968,14 @@ app.get('/api/shops', (req, res) => {
     const cateIds = req.query.cateId ? [String(req.query.cateId)] : []
     const range = getDateRange(days)
 
-    const data = kaloPost('/shop/queryList', {
+    const data = await kaloPostWithRetry('/shop/queryList', () => ({
       country,
       ...range,
       pageNo: page,
       pageSize,
       cateIds,
       sort: [{ field: sortField, type: 'DESC' }],
-    }, country)
+    }), country, { targetCount: Math.min(pageSize - 5, 55) })
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1453,16 +1535,16 @@ app.get('/api/product/:id/lives', (req, res) => {
  *       500:
  *         description: Erro interno
  */
-app.get('/api/creators', (req, res) => {
+app.get('/api/creators', async (req, res) => {
   try {
     const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
-    const pageSize = Math.min(parseInt(req.query.pageSize) || 10, 10)
+    const pageSize = parseInt(req.query.pageSize) || 60
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/creator/queryList', {
+    const data = await kaloPostWithRetry('/creator/queryList', () => ({
       country,
       ...range,
       pageNo: page,
@@ -1470,7 +1552,7 @@ app.get('/api/creators', (req, res) => {
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }, country)
+    }), country, { targetCount: Math.min(pageSize - 5, 55) })
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
