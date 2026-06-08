@@ -57,40 +57,137 @@ function sleep (ms) {
 }
 
 // ---------------------------------------------------------------------------
-// Retry-até-completar para endpoints de ranking (Tarefa 2)
+// Paginação acumuladora para endpoints de ranking (Tarefa 2 — revisado)
 // ---------------------------------------------------------------------------
-// Chama kaloPost repetidamente até obter >= targetCount itens
-// ou esgotar maxAttempts, retornando sempre a melhor resposta.
+// kaloPostPaginated: busca páginas upstream (page=1,2,3,...) até atingir
+// targetCount itens ou receber página vazia/incompleta.
+// Cada página usa um proxy rotativo com backoff+jitter entre chamadas.
+// Para endpoints que já retornam tudo numa página (products/videos/shops),
+// basta targetCount > upstreamPageSize — para na 1ª página cheia.
 // ---------------------------------------------------------------------------
-async function kaloPostWithRetry (path, bodyFn, country, opts = {}) {
+
+/**
+ * Extrai a lista de itens de uma resposta kaloPost.
+ * A API devolve { data: [...], success, ... } ou { list: [...] } ou similar.
+ */
+function extractItems (data) {
+  if (!data) return []
+  if (Array.isArray(data.data)) return data.data
+  if (Array.isArray(data.list)) return data.list
+  if (Array.isArray(data.items)) return data.items
+  return []
+}
+
+/**
+ * Deduplica por campo 'id' (mantém primeiro ocorrência) e reordena desc por 'revenue'.
+ */
+function dedupeAndSort (items) {
+  const seen = new Set()
+  const unique = items.filter(item => {
+    const key = item?.id ?? item?.creator_id ?? item?.product_id ?? JSON.stringify(item)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  // Reordena por revenue desc (campo pode ser number ou string monetário)
+  unique.sort((a, b) => {
+    const ra = parseFloat(String(a?.revenue ?? 0).replace(/[^0-9.]/g, '')) || 0
+    const rb = parseFloat(String(b?.revenue ?? 0).replace(/[^0-9.]/g, '')) || 0
+    return rb - ra
+  })
+  return unique
+}
+
+/**
+ * Faz paginação acumuladora no kalodata upstream.
+ *
+ * @param {string} path             - caminho da API upstream (ex: '/creator/queryList')
+ * @param {function} bodyFn         - (pageNo) => objeto de body para kaloPost
+ * @param {string} country          - código de país
+ * @param {object} opts
+ *   @param {number} targetCount    - mínimo de itens para parar (padrão: 55)
+ *   @param {number} upstreamPageSize - itens por página upstream (padrão: 60)
+ *   @param {number} maxPages       - máximo de páginas a buscar (padrão: 8)
+ *   @param {number} baseDelay      - delay base em ms entre páginas (padrão: 1200)
+ *   @param {boolean} needsSort     - se deve reordenar por revenue desc (padrão: false)
+ */
+async function kaloPostPaginated (path, bodyFn, country, opts = {}) {
   const {
-    targetCount = 55,    // considera completo quando items >= targetCount
-    maxAttempts = 4,
-    baseDelay = 1500,
+    targetCount    = 55,
+    upstreamPageSize = 60,
+    maxPages       = 8,
+    baseDelay      = 1200,
+    needsSort      = false,
   } = opts
 
-  let best = null
-  let bestCount = 0
+  let accumulated = []
+  let templateResponse = null
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
     const proxy = getNextProxy()
-    const body = bodyFn()
     try {
+      const body = bodyFn(pageNo)
       const data = kaloPost(path, body, country, proxy)
-      const items = data?.data || data?.list || data?.items || []
-      const count = Array.isArray(items) ? items.length : 0
-      console.log(`[ranking] ${path} attempt ${attempt}/${maxAttempts} proxy=${proxy ? proxy.replace(/:[^:@]*@/, ':***@') : 'none'} items=${count}`)
-      if (count > bestCount) { best = data; bestCount = count }
-      if (count >= targetCount) break
+      const items = extractItems(data)
+      const count = items.length
+
+      console.log(`[paginate] ${path} page=${pageNo} proxy=${proxy ? proxy.replace(/:[^:@]*@/, ':***@') : 'none'} items=${count}`)
+
+      if (pageNo === 1) templateResponse = data  // guarda shape da 1ª resposta
+
+      if (count === 0) {
+        console.log(`[paginate] ${path} page=${pageNo} returned empty — stopping`)
+        break
+      }
+
+      accumulated.push(...items)
+
+      // Para se a página veio incompleta (upstream não tem mais) OU atingiu o alvo
+      if (count < upstreamPageSize || accumulated.length >= targetCount) break
+
     } catch (err) {
-      console.warn(`[ranking] ${path} attempt ${attempt} error: ${err.message}`)
+      console.warn(`[paginate] ${path} page=${pageNo} error: ${err.message} — stopping`)
+      break
     }
-    if (attempt < maxAttempts) {
-      await sleep(jitter(baseDelay, baseDelay))
+
+    if (pageNo < maxPages) {
+      await sleep(jitter(baseDelay, Math.floor(baseDelay / 2)))
     }
   }
 
-  return best
+  if (!templateResponse) return null
+
+  // Dedup + sort opcional + corte ao targetCount
+  if (needsSort) accumulated = dedupeAndSort(accumulated)
+  else {
+    // Só dedup, sem reorder (preserva ordem original do upstream)
+    const seen = new Set()
+    accumulated = accumulated.filter(item => {
+      const key = item?.id ?? item?.creator_id ?? item?.product_id ?? JSON.stringify(item)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }
+
+  // Monta resposta com o mesmo shape da original mas com os itens acumulados
+  const merged = { ...templateResponse }
+  if (Array.isArray(templateResponse.data))  merged.data  = accumulated
+  else if (Array.isArray(templateResponse.list))  merged.list  = accumulated
+  else if (Array.isArray(templateResponse.items)) merged.items = accumulated
+
+  return merged
+}
+
+// Alias de compatibilidade — endpoints de página única usam esse wrapper simplificado
+async function kaloPostWithRetry (path, bodyFn, country, opts = {}) {
+  return kaloPostPaginated(path, bodyFn, country, {
+    targetCount: opts.targetCount ?? 55,
+    upstreamPageSize: 60,  // products/videos/shops já vêm com 60 numa página
+    maxPages: 1,           // não pagina — para na 1ª página
+    baseDelay: opts.baseDelay ?? 1200,
+    needsSort: false,
+  })
 }
 
 
@@ -865,15 +962,23 @@ app.get('/api/lives', async (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = await kaloPostWithRetry('/livestream/queryList', () => ({
+    cconst data = await kaloPostPaginated('/livestream/queryList', (pageNo) => ({
       country,
       ...range,
-      pageNo: page,
+      pageNo,
       pageSize,
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }), country, { targetCount: Math.min(pageSize - 3, 17) })
+    }), country, {
+      targetCount: pageSize,          // acumula até o alvo (ex: 20)
+      upstreamPageSize: pageSize,     // se upstream entrega tudo, para na 1ª página
+      maxPages: 3,                    // máximo 3 páginas de lives (gentil)
+      baseDelay: 1200,
+      needsSort: false,
+    })
+    if (data && Array.isArray(data.data)) data.data = data.data.slice(0, pageSize)
+    else if (data && Array.isArray(data.list)) data.list = data.list.slice(0, pageSize)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1544,15 +1649,25 @@ app.get('/api/creators', async (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = await kaloPostWithRetry('/creator/queryList', () => ({
+    cconst UPSTREAM_CREATOR_PAGE = 10  // kalodata retorna 10 criadores por página
+    const data = await kaloPostPaginated('/creator/queryList', (pageNo) => ({
       country,
       ...range,
-      pageNo: page,
-      pageSize,
+      pageNo,
+      pageSize: UPSTREAM_CREATOR_PAGE,
       cateIds: [],
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }), country, { targetCount: Math.min(pageSize - 5, 55) })
+    }), country, {
+      targetCount: pageSize,          // acumula até o que o cliente pediu (ex: 60)
+      upstreamPageSize: UPSTREAM_CREATOR_PAGE,
+      maxPages: Math.ceil(pageSize / UPSTREAM_CREATOR_PAGE) + 2,  // páginas necessárias + margem
+      baseDelay: 1200,
+      needsSort: false,               // upstream já retorna em ordem de revenue
+    })
+    // Corta ao pageSize pedido pelo cliente
+    if (data && Array.isArray(data.data)) data.data = data.data.slice(0, pageSize)
+    else if (data && Array.isArray(data.list)) data.list = data.list.slice(0, pageSize)
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
