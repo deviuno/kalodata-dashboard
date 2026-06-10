@@ -962,7 +962,7 @@ app.get('/api/lives', async (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    cconst data = await kaloPostPaginated('/livestream/queryList', (pageNo) => ({
+    const data = await kaloPostPaginated('/livestream/queryList', (pageNo) => ({
       country,
       ...range,
       pageNo,
@@ -1649,7 +1649,7 @@ app.get('/api/creators', async (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    cconst UPSTREAM_CREATOR_PAGE = 10  // kalodata retorna 10 criadores por página
+    const UPSTREAM_CREATOR_PAGE = 10  // kalodata retorna 10 criadores por página
     const data = await kaloPostPaginated('/creator/queryList', (pageNo) => ({
       country,
       ...range,
