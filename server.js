@@ -16,13 +16,23 @@ const PORT = parseInt(process.env.PORT) || 4001
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
 
 // ---------------------------------------------------------------------------
-// Proxy pool (Tarefa 1)
+// Proxy pool — GEO-AWARE (Tarefa 2)
 // ---------------------------------------------------------------------------
-// Lê PROXY_LIST (vírgulas) ou PROXY_URL (único/rotativo) do ambiente.
-// Formato esperado: http://user:pass@host:port
-// Se vazio, funciona sem proxy (comportamento original).
+// Prioridade:
+//   1. PROXY_URL_TEMPLATE  — substitui {CC} pelo country em minúsculas (geo-aware)
+//      Ex: http://user:pass_country-{CC}@geo.iproyal.com:12321
+//   2. PROXY_LIST          — pool fixo de URLs (round-robin, como antes)
+//   3. PROXY_URL           — URL único/rotativo (como antes)
+//   4. (nada)              — sem proxy
 // ---------------------------------------------------------------------------
+
+const VALID_CC = new Set(['br','us','gb','de','fr','es','it'])
+const PROXY_TEMPLATE = process.env.PROXY_URL_TEMPLATE
+  ? process.env.PROXY_URL_TEMPLATE.trim()
+  : null
+
 const PROXY_URLS = (() => {
+  if (PROXY_TEMPLATE) return [] // não usa pool fixo quando template está ativo
   if (process.env.PROXY_LIST) {
     return process.env.PROXY_LIST.split(',').map(p => p.trim()).filter(Boolean)
   }
@@ -34,8 +44,19 @@ const PROXY_URLS = (() => {
 
 let _proxyIdx = 0
 
-/** Retorna o próximo proxy da pool (round-robin), ou null se não configurado. */
-function getNextProxy () {
+/**
+ * Retorna a URL de proxy para o country informado.
+ * - Se PROXY_URL_TEMPLATE está definido, substitui {CC} pelo cc do país (geo-aware).
+ * - Caso contrário, usa pool round-robin (PROXY_LIST/PROXY_URL).
+ * - Retorna null se nenhuma config de proxy existir.
+ * @param {string} [country] - ex: 'BR', 'us', 'GB'
+ */
+function getNextProxy (country) {
+  if (PROXY_TEMPLATE) {
+    const cc = (typeof country === 'string' ? country.toLowerCase() : 'br')
+    const finalCc = VALID_CC.has(cc) ? cc : 'br'
+    return PROXY_TEMPLATE.replace('{CC}', finalCc)
+  }
   if (PROXY_URLS.length === 0) return null
   const proxy = PROXY_URLS[_proxyIdx % PROXY_URLS.length]
   _proxyIdx++
@@ -124,7 +145,7 @@ async function kaloPostPaginated (path, bodyFn, country, opts = {}) {
   let templateResponse = null
 
   for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
-    const proxy = getNextProxy()
+    const proxy = getNextProxy(country)
     try {
       const body = bodyFn(pageNo)
       const data = kaloPost(path, body, country, proxy)
