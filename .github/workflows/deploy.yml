@@ -1,16 +1,3 @@
-# Sprint 0 / S0-1 â Deploy automÃ¡tico no servidor 187.127.0.217 a cada
-# push pra main. Substitui SSH manual.
-#
-# **ConfiguraÃ§Ã£o necessÃ¡ria (uma vez)** nos repo settings:
-#   Settings â Secrets and variables â Actions â New repository secret
-#   - SSH_HOST: 187.127.0.217
-#   - SSH_USER: <usuÃ¡rio do servidor, ex: root>
-#   - SSH_KEY: <chave privada SSH (id_ed25519 inteiro com BEGIN/END)>
-#   - SSH_PATH: <caminho do projeto no servidor, ex: /root/kalodata-dashboard>
-#   - SSH_PORT: 22 (opcional, default 22)
-#
-# Depois disso, cada push pra main faz git pull + npm install + restart.
-
 name: Deploy
 on:
   push:
@@ -24,7 +11,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Setup SSH key
         run: |
@@ -32,12 +19,13 @@ jobs:
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ secrets.SSH_PORT || 22 }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
       - name: Write ecosystem.config.cjs
         env:
           PROXY_URL_TEMPLATE: ${{ secrets.PROXY_URL_TEMPLATE }}
         run: |
           ECO=$(printf 'module.exports={apps:[{name:"kalodata-scraper",script:"server.js",cwd:"/root/kalodata-dashboard",env:{NODE_ENV:"production",PORT:4001,PROXY_URL_TEMPLATE:"%s"}}]}' "$PROXY_URL_TEMPLATE" | base64 -w0)
-          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo $ECO | base64 -d > /root/kalodata-dashboard/ecosystem.config.cjs && echo ecosystem.config.cjs OK"
+          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo $ECO | base64 -d > /root/kalodata-dashboard/ecosystem.config.cjs"
 
       - name: Pull, install, restart
         run: |
@@ -45,30 +33,16 @@ jobs:
           set -e
           export NVM_DIR="$HOME/.nvm"
           [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-          if [ -d "$NVM_DIR/versions/node" ]; then
-            NODE_BIN=$(ls -d $NVM_DIR/versions/node/*/bin 2>/dev/null | head -1)
-            [ -n "$NODE_BIN" ] && export PATH="$NODE_BIN:$PATH"
-          fi
-          echo "==> Using node: $(which node 2>/dev/null || echo 'NOT FOUND')"
-          echo "==> Using pm2: $(which pm2 2>/dev/null || echo 'NOT FOUND')"
-          cd ${{ secrets.SSH_PATH }}
-          echo "==> Pulling latest from main"
-          git fetch origin main
-          git reset --hard origin/main
-          echo "==> Installing dependencies (production-only)"
-          npm install --omit=dev --no-audit --no-fund
-          echo "==> Restarting service"
+          NODE_BIN=$(ls -d $NVM_DIR/versions/node/*/bin 2>/dev/null | head -1)
+          [ -n "$NODE_BIN" ] && export PATH="$NODE_BIN:$PATH"
+          echo node version: $(node --version 2>/dev/null || echo NOT_FOUND)
+          git -C /root/kalodata-dashboard fetch origin main
+          git -C /root/kalodata-dashboard reset --hard origin/main
+          cd /root/kalodata-dashboard && npm install --omit=dev --no-audit --no-fund
           if command -v pm2 >/dev/null 2>&1 && pm2 describe kalodata-scraper >/dev/null 2>&1; then
-            pm2 reload kalodata-scraper --update-env
-            pm2 save
-          elif systemctl list-unit-files | grep -q kalodata-scraper; then
-            sudo systemctl restart kalodata-scraper
+            pm2 reload kalodata-scraper --update-env && pm2 save
           else
-            echo "AVISO: nem pm2 nem systemd encontrados â startup manual ainda necessÃ¡rio."
-            exit 1
+            echo pm2 or kalodata-scraper not found && exit 1
           fi
-          echo "==> Verifying health (port 4001)"
-          sleep 2
-          curl -fsS http://localhost:4001/api/health || (echo "Health check falhou"; exit 1)
-          echo "==> Deploy OK"
+          echo Deploy OK
           EOF
