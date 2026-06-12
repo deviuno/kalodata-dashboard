@@ -39,6 +39,15 @@ jobs:
           git -C /root/kalodata-dashboard fetch origin main
           git -C /root/kalodata-dashboard reset --hard origin/main
           cd /root/kalodata-dashboard && npm install --omit=dev --no-audit --no-fund
+          echo "=== PM2 status ==="
+          pm2 list 2>/dev/null || echo pm2 not available
+          echo "=== cookies.txt check ==="
+          ls -la /root/kalodata-dashboard/cookies.txt 2>/dev/null && wc -c /root/kalodata-dashboard/cookies.txt || echo cookies.txt NOT FOUND
+          echo "=== ecosystem.config.cjs check ==="
+          ls -la /root/kalodata-dashboard/ecosystem.config.cjs 2>/dev/null || echo ecosystem.config.cjs NOT FOUND
+          cat /root/kalodata-dashboard/ecosystem.config.cjs 2>/dev/null | head -c 200 || echo cannot read
+          echo "=== pm2 env check ==="
+          pm2 env kalodata-scraper 2>/dev/null | grep -E "PROXY|NODE_ENV|PORT" || echo cannot check env
           if command -v pm2 >/dev/null 2>&1 && pm2 describe kalodata-scraper >/dev/null 2>&1; then
             PROXY_URL_TEMPLATE=$(node -e "const c=require('/root/kalodata-dashboard/ecosystem.config.cjs');console.log(c.apps[0].env.PROXY_URL_TEMPLATE||'')" 2>/dev/null || echo "") && export PROXY_URL_TEMPLATE && pm2 reload kalodata-scraper --update-env && pm2 save
           else
