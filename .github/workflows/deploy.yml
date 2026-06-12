@@ -1,6 +1,15 @@
-# Deploy automático no servidor a cada push pra main.
-# Secrets necessários: SSH_HOST, SSH_USER, SSH_KEY, SSH_PATH (e SSH_PORT opcional)
-# PROXY_URL_TEMPLATE: URL do proxy geo-aware com {CC} como placeholder de país
+# Sprint 0 / S0-1 â Deploy automÃ¡tico no servidor 187.127.0.217 a cada
+# push pra main. Substitui SSH manual.
+#
+# **ConfiguraÃ§Ã£o necessÃ¡ria (uma vez)** nos repo settings:
+#   Settings â Secrets and variables â Actions â New repository secret
+#   - SSH_HOST: 187.127.0.217
+#   - SSH_USER: <usuÃ¡rio do servidor, ex: root>
+#   - SSH_KEY: <chave privada SSH (id_ed25519 inteiro com BEGIN/END)>
+#   - SSH_PATH: <caminho do projeto no servidor, ex: /root/kalodata-dashboard>
+#   - SSH_PORT: 22 (opcional, default 22)
+#
+# Depois disso, cada push pra main faz git pull + npm install + restart.
 
 name: Deploy
 on:
@@ -23,33 +32,31 @@ jobs:
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ secrets.SSH_PORT || 22 }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
-
-      - name: Pull, install, restart
+      - name: Write ecosystem.config.cjs
         env:
           PROXY_URL_TEMPLATE: ${{ secrets.PROXY_URL_TEMPLATE }}
         run: |
-          # Step 1: Write ecosystem.config.cjs with PROXY_URL_TEMPLATE to VPS
-          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            python3 -c "
-import os,json
-cfg = {'apps':[{'name':'kalodata-scraper','script':'server.js','cwd':'/root/kalodata-dashboard','env':{'NODE_ENV':'production','PORT':4001,'PROXY_URL_TEMPLATE': os.environ.get('PROXY_TMPL','')}}]}
-open('/root/kalodata-dashboard/ecosystem.config.cjs','w').write('module.exports = '+json.dumps(cfg,separators=(',',':')))
-print('ecosystem.config.cjs written OK')
-" \
-            PROXY_TMPL="$PROXY_URL_TEMPLATE"
-          # Step 2: Pull latest code, install deps, reload PM2
+          ECO=$(printf 'module.exports={apps:[{name:"kalodata-scraper",script:"server.js",cwd:"/root/kalodata-dashboard",env:{NODE_ENV:"production",PORT:4001,PROXY_URL_TEMPLATE:"%s"}}]}' "$PROXY_URL_TEMPLATE" | base64 -w0)
+          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo $ECO | base64 -d > /root/kalodata-dashboard/ecosystem.config.cjs && echo ecosystem.config.cjs OK"
+
+      - name: Pull, install, restart
+        run: |
           ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash <<'EOF'
           set -e
           export NVM_DIR="$HOME/.nvm"
           [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-          NODE_BIN=$(ls -d $NVM_DIR/versions/node/*/bin 2>/dev/null | head -1)
-          [ -n "$NODE_BIN" ] && export PATH="$NODE_BIN:$PATH"
+          if [ -d "$NVM_DIR/versions/node" ]; then
+            NODE_BIN=$(ls -d $NVM_DIR/versions/node/*/bin 2>/dev/null | head -1)
+            [ -n "$NODE_BIN" ] && export PATH="$NODE_BIN:$PATH"
+          fi
           echo "==> Using node: $(which node 2>/dev/null || echo 'NOT FOUND')"
+          echo "==> Using pm2: $(which pm2 2>/dev/null || echo 'NOT FOUND')"
+          cd ${{ secrets.SSH_PATH }}
           echo "==> Pulling latest from main"
-          git -C /root/kalodata-dashboard fetch origin main
-          git -C /root/kalodata-dashboard reset --hard origin/main
+          git fetch origin main
+          git reset --hard origin/main
           echo "==> Installing dependencies (production-only)"
-          cd /root/kalodata-dashboard && npm install --omit=dev --no-audit --no-fund
+          npm install --omit=dev --no-audit --no-fund
           echo "==> Restarting service"
           if command -v pm2 >/dev/null 2>&1 && pm2 describe kalodata-scraper >/dev/null 2>&1; then
             pm2 reload kalodata-scraper --update-env
@@ -57,8 +64,11 @@ print('ecosystem.config.cjs written OK')
           elif systemctl list-unit-files | grep -q kalodata-scraper; then
             sudo systemctl restart kalodata-scraper
           else
-            echo "AVISO: nem pm2 nem systemd encontrados."
+            echo "AVISO: nem pm2 nem systemd encontrados â startup manual ainda necessÃ¡rio."
             exit 1
           fi
+          echo "==> Verifying health (port 4001)"
+          sleep 2
+          curl -fsS http://localhost:4001/api/health || (echo "Health check falhou"; exit 1)
           echo "==> Deploy OK"
           EOF
