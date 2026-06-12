@@ -40,7 +40,7 @@ jobs:
           git -C /root/kalodata-dashboard reset --hard origin/main
           cd /root/kalodata-dashboard && npm install --omit=dev --no-audit --no-fund
           if command -v pm2 >/dev/null 2>&1 && pm2 describe kalodata-scraper >/dev/null 2>&1; then
-            pm2 reload kalodata-scraper --update-env && pm2 save
+            pm2 startOrReload /root/kalodata-dashboard/ecosystem.config.cjs --update-env && pm2 save
           else
             echo pm2 or kalodata-scraper not found && exit 1
           fi
