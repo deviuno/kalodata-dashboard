@@ -1,15 +1,6 @@
-# Sprint 0 / S0-1 — Deploy automático no servidor 187.127.0.217 a cada
-# push pra main. Substitui SSH manual.
-#
-# **Configuração necessária (uma vez)** nos repo settings:
-#   Settings → Secrets and variables → Actions → New repository secret
-#   - SSH_HOST: 187.127.0.217
-#   - SSH_USER: <usuário do servidor, ex: root>
-#   - SSH_KEY: <chave privada SSH (id_ed25519 inteiro com BEGIN/END)>
-#   - SSH_PATH: <caminho do projeto no servidor, ex: /root/kalodata-dashboard>
-#   - SSH_PORT: 22 (opcional, default 22)
-#
-# Depois disso, cada push pra main faz git pull + npm install + restart.
+# Deploy automático no servidor a cada push pra main.
+# Secrets necessários: SSH_HOST, SSH_USER, SSH_KEY, SSH_PATH (e SSH_PORT opcional)
+# PROXY_URL_TEMPLATE: URL do proxy geo-aware com {CC} como placeholder de país
 
 name: Deploy
 on:
@@ -32,15 +23,21 @@ jobs:
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ secrets.SSH_PORT || 22 }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
       - name: Pull, install, restart
         env:
           PROXY_URL_TEMPLATE: ${{ secrets.PROXY_URL_TEMPLATE }}
         run: |
-          # Escreve ecosystem.config.cjs na VPS com PROXY_URL_TEMPLATE do secret
+          # Step 1: Write ecosystem.config.cjs with PROXY_URL_TEMPLATE to VPS
           ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
-            "mkdir -p /root/kalodata-dashboard && cat > /root/kalodata-dashboard/ecosystem.config.cjs" << ECOCFG
-module.exports = {apps:[{name:"kalodata-scraper",script:"server.js",cwd:"/root/kalodata-dashboard",env:{NODE_ENV:"production",PORT:4001,PROXY_URL_TEMPLATE:"$PROXY_URL_TEMPLATE"}}]}
-ECOCFG
+            python3 -c "
+import os,json
+cfg = {'apps':[{'name':'kalodata-scraper','script':'server.js','cwd':'/root/kalodata-dashboard','env':{'NODE_ENV':'production','PORT':4001,'PROXY_URL_TEMPLATE': os.environ.get('PROXY_TMPL','')}}]}
+open('/root/kalodata-dashboard/ecosystem.config.cjs','w').write('module.exports = '+json.dumps(cfg,separators=(',',':')))
+print('ecosystem.config.cjs written OK')
+" \
+            PROXY_TMPL="$PROXY_URL_TEMPLATE"
+          # Step 2: Pull latest code, install deps, reload PM2
           ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} bash <<'EOF'
           set -e
           export NVM_DIR="$HOME/.nvm"
@@ -52,16 +49,15 @@ ECOCFG
           git -C /root/kalodata-dashboard fetch origin main
           git -C /root/kalodata-dashboard reset --hard origin/main
           echo "==> Installing dependencies (production-only)"
-          cd /root/kalodata-dashboard
-          npm install --omit=dev --no-audit --no-fund
-          echo "==> Restarting service (pm2 reload com --update-env)"
+          cd /root/kalodata-dashboard && npm install --omit=dev --no-audit --no-fund
+          echo "==> Restarting service"
           if command -v pm2 >/dev/null 2>&1 && pm2 describe kalodata-scraper >/dev/null 2>&1; then
             pm2 reload kalodata-scraper --update-env
             pm2 save
           elif systemctl list-unit-files | grep -q kalodata-scraper; then
             sudo systemctl restart kalodata-scraper
           else
-            echo "AVISO: nem pm2 nem systemd encontrados — startup manual ainda necessario."
+            echo "AVISO: nem pm2 nem systemd encontrados."
             exit 1
           fi
           echo "==> Deploy OK"
