@@ -41,5 +41,14 @@ jobs:
           cd /root/kalodata-dashboard && npm install --omit=dev --no-audit --no-fund
           pm2 startOrReload /root/kalodata-dashboard/ecosystem.config.cjs --update-env
           pm2 save
+          sleep 3
+          echo === pm2 env PROXY check ===
+          pm2 env 0 2>/dev/null | grep PROXY || echo no PROXY in pm2 env
+          echo === proxy test ===
+          PROXY_URL=$(node -e "const c=require('/root/kalodata-dashboard/ecosystem.config.cjs'); const t=c.apps[0].env.PROXY_URL_TEMPLATE; console.log(t.replace('{CC}','br'))" 2>/dev/null || echo TEMPLATE_READ_FAILED)
+          MASKED=$(echo "$PROXY_URL" | sed 's/:[^:@]*@/:***@/')
+          echo proxy url masked: $MASKED
+          PROXY_IP=$(curl -s --max-time 10 -x "$PROXY_URL" https://ipv4.icanhazip.com 2>/dev/null || echo PROXY_FAILED)
+          echo proxy ip: $PROXY_IP
           echo Deploy OK
           EOF
