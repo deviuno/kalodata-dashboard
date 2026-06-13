@@ -18,7 +18,7 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p ${{ secrets.SSH_PORT || 22 }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -p ${{ secrets.SSH_PORT || 22 }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts || true
 
       - name: Write ecosystem.config.cjs
         env:
@@ -42,13 +42,18 @@ jobs:
           pm2 startOrReload /root/kalodata-dashboard/ecosystem.config.cjs --update-env
           pm2 save
           sleep 2
-          echo === network + proxy diagnostics ===
+          echo === proxy tests ===
+          RAW_TMPL=$(node -e "const c=require('/root/kalodata-dashboard/ecosystem.config.cjs'); console.log(c.apps[0].env.PROXY_URL_TEMPLATE)" 2>/dev/null)
+          echo template length: ${#RAW_TMPL}
           PROXY_URL=$(node -e "const c=require('/root/kalodata-dashboard/ecosystem.config.cjs'); const t=c.apps[0].env.PROXY_URL_TEMPLATE; console.log(t.replace('{CC}','br'))" 2>/dev/null)
-          MASKED=$(echo "$PROXY_URL" | sed 's/:[^:@]*@/:***@/')
-          echo proxy url: $MASKED
-          echo == TCP connect test to proxy host ==
-          timeout 5 bash -c 'cat < /dev/null > /dev/tcp/geo.iproyal.com/12321' 2>&1 && echo TCP_OK || echo TCP_FAILED
-          echo == curl verbose proxy test ==
-          /usr/local/bin/curl_chrome116 -v --max-time 10 -x "$PROXY_URL" https://ipv4.icanhazip.com 2>&1 | head -30 || true
+          PHOST=$(echo "$PROXY_URL" | sed 's|.*@||')
+          PUSER=$(echo "$PROXY_URL" | sed 's|.*://||;s|:.*||')
+          echo proxy host: $PHOST
+          echo proxy user: $PUSER
+          echo == HTTP proxy test ==
+          curl -s --max-time 10 --proxy "$PROXY_URL" https://ipv4.icanhazip.com 2>&1 | head -5 || true
+          echo == SOCKS5 proxy test ==
+          SOCKS_URL=$(echo "$PROXY_URL" | sed 's|^http://|socks5://|')
+          curl -s --max-time 10 --socks5 "geo.iproyal.com:12321" -U "$PUSER:$(echo "$PROXY_URL" | sed 's|.*:||;s|@.*||')" https://ipv4.icanhazip.com 2>&1 | head -5 || true
           echo Deploy OK
           EOF
