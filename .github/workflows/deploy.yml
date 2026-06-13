@@ -42,13 +42,17 @@ jobs:
           pm2 startOrReload /root/kalodata-dashboard/ecosystem.config.cjs --update-env
           pm2 save
           sleep 3
-          echo === pm2 env PROXY check ===
-          pm2 env 0 2>/dev/null | grep PROXY || echo no PROXY in pm2 env
-          echo === proxy test ===
-          PROXY_URL=$(node -e "const c=require('/root/kalodata-dashboard/ecosystem.config.cjs'); const t=c.apps[0].env.PROXY_URL_TEMPLATE; console.log(t.replace('{CC}','br'))" 2>/dev/null || echo TEMPLATE_READ_FAILED)
+          echo === proxy diagnostics ===
+          PROXY_URL=$(node -e "const c=require('/root/kalodata-dashboard/ecosystem.config.cjs'); const t=c.apps[0].env.PROXY_URL_TEMPLATE; console.log(t.replace('{CC}','br'))" 2>/dev/null)
           MASKED=$(echo "$PROXY_URL" | sed 's/:[^:@]*@/:***@/')
           echo proxy url masked: $MASKED
-          PROXY_IP=$(curl -s --max-time 10 -x "$PROXY_URL" https://ipv4.icanhazip.com 2>/dev/null || echo PROXY_FAILED)
-          echo proxy ip: $PROXY_IP
+          echo == curl_chrome116 proxy test ==
+          OUT=$(/usr/local/bin/curl_chrome116 -s --max-time 15 -x "$PROXY_URL" https://ipv4.icanhazip.com 2>&1 || echo CURL_FAILED)
+          echo proxy ip: $OUT
+          echo == curl_chrome116 direct test ==
+          DIRECT=$(/usr/local/bin/curl_chrome116 -s --max-time 15 https://ipv4.icanhazip.com 2>&1 || echo DIRECT_FAILED)
+          echo direct ip: $DIRECT
+          echo == cookies.txt check ==
+          ls -la /root/kalodata-dashboard/cookies.txt 2>/dev/null && wc -c /root/kalodata-dashboard/cookies.txt || echo cookies NOT FOUND
           echo Deploy OK
           EOF
