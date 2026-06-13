@@ -24,8 +24,8 @@ jobs:
         env:
           PROXY_URL_TEMPLATE: ${{ secrets.PROXY_URL_TEMPLATE }}
         run: |
-          ECO=$(printf 'module.exports={apps:[{name:"kalodata-scraper",script:"server.js",cwd:"/root/kalodata-dashboard",env:{NODE_ENV:"production",PORT:4001,PROXY_URL_TEMPLATE:"%s"}}]}' "$PROXY_URL_TEMPLATE" | base64 -w0)
-          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo $ECO | base64 -d > /root/kalodata-dashboard/ecosystem.config.cjs"
+          ECO=$(printf 'module.exports={apps:[{name:"kalodata-scraper",script:"server.js",cwd:"/root/kalodata-dashboard",env:{NODE_ENV:"production",PORT:4001,PROXY_URL_TEMPLATE:"%s"}}]}' "$PROXY_URL_TEMPLATE")
+          ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo '$ECO' > /root/kalodata-dashboard/ecosystem.config.cjs"
 
       - name: Pull, install, restart
         run: |
@@ -35,25 +35,9 @@ jobs:
           [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
           NODE_BIN=$(ls -d $NVM_DIR/versions/node/*/bin 2>/dev/null | head -1)
           [ -n "$NODE_BIN" ] && export PATH="$NODE_BIN:$PATH"
-          echo node version: $(node --version 2>/dev/null || echo NOT_FOUND)
           git -C /root/kalodata-dashboard fetch origin main
           git -C /root/kalodata-dashboard reset --hard origin/main
           cd /root/kalodata-dashboard && npm install --omit=dev --no-audit --no-fund
           pm2 startOrReload /root/kalodata-dashboard/ecosystem.config.cjs --update-env
           pm2 save
-          sleep 2
-          echo === proxy tests ===
-          RAW_TMPL=$(node -e "const c=require('/root/kalodata-dashboard/ecosystem.config.cjs'); console.log(c.apps[0].env.PROXY_URL_TEMPLATE)" 2>/dev/null)
-          echo template length: ${#RAW_TMPL}
-          PROXY_URL=$(node -e "const c=require('/root/kalodata-dashboard/ecosystem.config.cjs'); const t=c.apps[0].env.PROXY_URL_TEMPLATE; console.log(t.replace('{CC}','br'))" 2>/dev/null)
-          PHOST=$(echo "$PROXY_URL" | sed 's|.*@||')
-          PUSER=$(echo "$PROXY_URL" | sed 's|.*://||;s|:.*||')
-          echo proxy host: $PHOST
-          echo proxy user: $PUSER
-          echo == HTTP proxy test ==
-          curl -s --max-time 10 --proxy "$PROXY_URL" https://ipv4.icanhazip.com 2>&1 | head -5 || true
-          echo == SOCKS5 proxy test ==
-          SOCKS_URL=$(echo "$PROXY_URL" | sed 's|^http://|socks5://|')
-          curl -s --max-time 10 --socks5 "geo.iproyal.com:12321" -U "$PUSER:$(echo "$PROXY_URL" | sed 's|.*:||;s|@.*||')" https://ipv4.icanhazip.com 2>&1 | head -5 || true
-          echo Deploy OK
           EOF
