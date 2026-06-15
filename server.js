@@ -1573,6 +1573,57 @@ app.get('/api/product/:id/videos', (req, res) => {
 
 /**
  * @swagger
+ * /api/product/{id}/creators:
+ *   get:
+ *     summary: Criadores que venderam um produto
+ *     tags: [Products, Creators]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 7, enum: [7, 30] }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 10 }
+ *       - in: query
+ *         name: sortField
+ *         schema: { type: string, default: revenue, enum: [revenue, sale, video_revenue, live_revenue] }
+ *     responses:
+ *       200: { description: Lista de criadores }
+ *       500: { description: Erro interno }
+ */
+app.get('/api/product/:id/creators', (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const page = parseInt(req.query.page) || 1
+    const pageSize = parseInt(req.query.pageSize) || 10
+    const sortField = req.query.sortField || 'revenue'
+    const range = getDateRange(days)
+
+    const data = kaloPost('/product/detail/creator/queryList', {
+      id,
+      ...range,
+      authority: true,
+      pageNo: page,
+      pageSize,
+      sort: [{ field: sortField, type: 'DESC' }],
+    }, country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
  * /api/product/{id}/lives:
  *   get:
  *     summary: Lives que venderam um produto
