@@ -1,12 +1,13 @@
 import express from 'express'
 import cors from 'cors'
-import { execFileSync } from 'child_process'
+import { execFileSync, execFile } from 'child_process'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { Resend } from 'resend'
 import cron from 'node-cron'
 import swaggerJsdoc from 'swagger-jsdoc'
 import swaggerUi from 'swagger-ui-express'
 import { headersForCountry, parseCountry, countryLowercase, DEFAULT_COUNTRY, COUNTRY_CONFIG } from './lib/countries.js'
+import { runScraperFn, getQueueStats } from './lib/scraper-queue.js'
 
 const app = express()
 app.use(cors())
@@ -349,6 +350,106 @@ function kaloGet(path, country = DEFAULT_COUNTRY) {
   }
   if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
+}
+
+// ---------------------------------------------------------------------------
+// kaloPostAsync / kaloGetAsync — variantes assíncronas (execFile + fila + proxy)
+// Usadas pelos endpoints novos/corrigidos desta sessão. kaloPost/kaloGet SYNC
+// ficam intocados (callers existentes não quebram). execFile não bloqueia o event
+// loop; a fila (scraper-queue) limita concorrência, faz dedup e timeout;
+// getNextProxy dá paridade geo com kaloPostPaginated. --max-time 20 alinha com o
+// cold-start (~22s) e o timeout de 20s do consumidor (Domma edge).
+// ---------------------------------------------------------------------------
+const _CURL_BIN = '/usr/local/bin/curl_chrome116'
+const _CURL_MAX_TIME = parseInt(process.env.CURL_MAX_TIME) || 20
+const _execTimeout = () => (parseInt(process.env.REQUEST_TIMEOUT_MS) || 22000) - 1000
+
+function _execCurl (args) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      _CURL_BIN, args,
+      { encoding: 'utf-8', timeout: _execTimeout(), killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 * 32 },
+      (err, stdout) => err ? reject(err) : resolve(stdout),
+    )
+    if (child && typeof child.unref === 'function') child.unref()
+  })
+}
+
+function _parseCurlResult (result) {
+  if (result.trimStart().startsWith('<')) {
+    throw new Error('Cloudflare challenge — atualize os cookies (precisa do cf_clearance)')
+  }
+  if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
+  return JSON.parse(result)
+}
+
+async function kaloPostAsync (path, body, country = DEFAULT_COUNTRY, proxyUrl = undefined) {
+  const cookies = getCookies()
+  if (!cookies) throw new Error('cookies.txt not found or empty')
+
+  const proxy = (proxyUrl !== undefined) ? proxyUrl : getNextProxy(country)
+  const ctx = headersForCountry(country)
+
+  const args = [
+    '-s', '--max-time', String(_CURL_MAX_TIME),
+    '-A', UA,
+    '-b', cookies,
+    '-H', 'content-type: application/json',
+    '-H', `country: ${ctx.country}`,
+    '-H', `currency: ${ctx.currency}`,
+    '-H', `language: ${ctx.language}`,
+    '-H', 'origin: https://www.kalodata.com',
+    '-H', 'referer: https://www.kalodata.com/explore',
+    '-H', 'sec-ch-ua: "Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+    '-H', 'sec-ch-ua-mobile: ?0',
+    '-H', 'sec-ch-ua-platform: "Linux"',
+    '-H', 'sec-fetch-dest: empty',
+    '-H', 'sec-fetch-mode: cors',
+    '-H', 'sec-fetch-site: same-origin',
+    '-H', 'dnt: 1',
+    '-X', 'POST',
+    `https://www.kalodata.com${path}`,
+    '--data-raw', JSON.stringify(body),
+    ...proxyCurlArgs(proxy),
+  ]
+
+  const key = `POST:${path}:${country}:${JSON.stringify(body)}`.substring(0, 256)
+  const result = await runScraperFn(key, () => _execCurl(args))
+  if (proxy) console.log('[proxy] kaloPostAsync', path, 'via', proxy.replace(/:[^:@]*@/, ':***@'))
+  return _parseCurlResult(result)
+}
+
+async function kaloGetAsync (path, country = DEFAULT_COUNTRY) {
+  const cookies = getCookies()
+  if (!cookies) throw new Error('cookies.txt not found or empty')
+
+  const proxy = getNextProxy(country)
+  const ctx = headersForCountry(country)
+
+  const args = [
+    '-s', '--max-time', String(_CURL_MAX_TIME),
+    '-A', UA,
+    '-b', cookies,
+    '-H', 'accept: application/json, text/plain, */*',
+    '-H', `country: ${ctx.country}`,
+    '-H', `currency: ${ctx.currency}`,
+    '-H', `language: ${ctx.language}`,
+    '-H', 'origin: https://www.kalodata.com',
+    '-H', 'referer: https://www.kalodata.com/creator/detail',
+    '-H', 'sec-ch-ua: "Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+    '-H', 'sec-ch-ua-mobile: ?0',
+    '-H', 'sec-ch-ua-platform: "Linux"',
+    '-H', 'sec-fetch-dest: empty',
+    '-H', 'sec-fetch-mode: cors',
+    '-H', 'sec-fetch-site: same-origin',
+    '-H', 'dnt: 1',
+    `https://www.kalodata.com${path}`,
+    ...proxyCurlArgs(proxy),
+  ]
+
+  const key = `GET:${path}:${country}`
+  const result = await runScraperFn(key, () => _execCurl(args))
+  return _parseCurlResult(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -905,8 +1006,47 @@ app.get('/api/videos', async (req, res) => {
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
     }), country, { targetCount: Math.min(pageSize - 5, 55) })
+
+    // Coluna Produto: enriquece com products:[{id,title}] em STALE-WHILE-REVALIDATE.
+    // NUNCA dá await aqui — cache hit entra na resposta; cache miss volta [] e dispara
+    // o fetch em background pra esquentar o cache pras próximas requests. Assim o
+    // /api/videos continua respondendo em <1s. O upstream /video/queryList não traz
+    // produto; a atribuição vem de /video/detail/product/queryList por vídeo.
+    if (data && Array.isArray(data.data) && data.data.length > 0) {
+      const enrichRange = getDateRange(days)
+      const MAX_ENRICH = 12 // só os top N por receita, pra não saturar a fila no cold start
+      data.data.forEach((v, idx) => {
+        if (idx >= MAX_ENRICH) { if (!v.products) v.products = []; return }
+        const videoId = v.id
+        if (!videoId) { v.products = []; return }
+        const cached = vpCacheGet(videoId)
+        if (cached !== null) { v.products = cached; return }
+        v.products = [] // resposta imediata; background popula pra próxima request
+        if (!vpInFlight.has(videoId)) {
+          vpInFlight.add(videoId)
+          kaloPostAsync('/video/detail/product/queryList', {
+            id: videoId, ...enrichRange, authority: true, pageNo: 1, pageSize: 10,
+          }, country)
+            .then(pd => {
+              const items = Array.isArray(pd?.data) ? pd.data
+                          : Array.isArray(pd?.list) ? pd.list
+                          : Array.isArray(pd?.items) ? pd.items : []
+              const products = items.map(p => ({
+                id: String(p.productId || p.product_id || p.id || ''),
+                title: String(p.productTitle || p.product_title || p.title || ''),
+              })).filter(p => p.id)
+              vpCacheSet(videoId, products)
+            })
+            .catch(e => console.warn(`[enrich-bg] ${videoId}: ${e.message}`))
+            .finally(() => vpInFlight.delete(videoId))
+        }
+      })
+    }
+
     res.json(data)
   } catch (e) {
+    if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
+    if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
     res.status(500).json({ success: false, message: e.message })
   }
 })
@@ -1033,7 +1173,7 @@ app.get('/api/lives', async (req, res) => {
  *       200: { description: Lives do criador }
  *       500: { description: Erro interno }
  */
-app.get('/api/creator/:id/lives', (req, res) => {
+app.get('/api/creator/:id/lives', async (req, res) => {
   try {
     const country = parseCountry(req)
     const { id } = req.params
@@ -1043,7 +1183,7 @@ app.get('/api/creator/:id/lives', (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
-    const data = kaloPost('/creator/detail/live/queryList', {
+    const data = await kaloPostAsync('/creator/detail/live/queryList', {
       id,
       country,
       ...range,
@@ -1053,6 +1193,65 @@ app.get('/api/creator/:id/lives', (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
+    if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
+    if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/creator/{id}/videos:
+ *   get:
+ *     summary: Videos de vendas de um criador (valores fieis Kalodata)
+ *     tags: [Creators]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: country
+ *         schema: { type: string, default: BR }
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 7, enum: [7, 30] }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 20 }
+ *       - in: query
+ *         name: sortField
+ *         schema: { type: string, default: revenue }
+ *     responses:
+ *       200: { description: Videos do criador com sale/revenue fieis }
+ *       503: { description: Scraper ocupado ou timeout }
+ */
+app.get('/api/creator/:id/videos', async (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const page = parseInt(req.query.page) || 1
+    const pageSize = parseInt(req.query.pageSize) || 20
+    const sortField = req.query.sortField || 'revenue'
+    const range = getDateRange(days)
+
+    const data = await kaloPostAsync('/creator/detail/video/queryList', {
+      id,
+      ...range,
+      authority: true,
+      pageNo: page,
+      pageSize,
+      sort: [{ field: sortField, type: 'DESC' }],
+    }, country)
+
+    const items = Array.isArray(data?.data) ? data.data
+                : Array.isArray(data?.list) ? data.list
+                : Array.isArray(data?.items) ? data.items : []
+    res.json({ success: true, data: items, total: items.length })
+  } catch (e) {
+    if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
+    if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
     res.status(500).json({ success: false, message: e.message })
   }
 })
@@ -2025,16 +2224,16 @@ app.get('/api/search/videos', (req, res) => {
  *       500:
  *         description: Erro interno
  */
-app.get('/api/creator/:id/products', (req, res) => {
+app.get('/api/creator/:id/products', async (req, res) => {
   try {
     const country = parseCountry(req)
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
-    const pageSize = parseInt(req.query.pageSize) || 10
+    const pageSize = parseInt(req.query.pageSize) || 20
     const range = getDateRange(days)
 
-    const data = kaloPost('/creator/detail/searchProducts', {
+    const data = await kaloPostAsync('/creator/detail/searchProducts', {
       id,
       ...range,
       cateIds: [],
@@ -2046,6 +2245,8 @@ app.get('/api/creator/:id/products', (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
+    if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
+    if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
     res.status(500).json({ success: false, message: e.message })
   }
 })
@@ -2107,14 +2308,14 @@ app.get('/api/creator/:id/products', (req, res) => {
  *       500:
  *         description: Erro interno
  */
-app.get('/api/creator/:id/total', (req, res) => {
+app.get('/api/creator/:id/total', async (req, res) => {
   try {
     const country = parseCountry(req)
     const { id } = req.params
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
 
-    const data = kaloPost('/creator/detail/total', {
+    const data = await kaloPostAsync('/creator/detail/total', {
       id,
       ...range,
       cateIds: [],
@@ -2123,6 +2324,8 @@ app.get('/api/creator/:id/total', (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
+    if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
+    if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
     res.status(500).json({ success: false, message: e.message })
   }
 })
@@ -2449,7 +2652,7 @@ app.post('/api/kalowave/refresh', requireAdminKey, (_req, res) => {
  *                   format: date-time
  */
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() })
+  res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString(), queue: getQueueStats() })
 })
 
 /**
@@ -2558,6 +2761,24 @@ function insightCacheGet(key) {
 
 function insightCacheSet(key, data, ttl) {
   insightCache.set(key, { data, expiresAt: Date.now() + ttl })
+}
+
+// Produtos atribuídos por vídeo (coluna Produto da listagem). Populado em
+// background pelo /api/videos (stale-while-revalidate). vpInFlight evita
+// disparos duplicados do mesmo videoId. Consts/fns ficam disponíveis em
+// request-time (módulo já carregado), igual ao insightCache.
+const videoProductsCache = new Map() // videoId -> { products:[{id,title}], expiresAt }
+const vpInFlight = new Set()
+
+function vpCacheGet (videoId) {
+  const e = videoProductsCache.get(videoId)
+  if (!e) return null
+  if (Date.now() >= e.expiresAt) { videoProductsCache.delete(videoId); return null }
+  return e.products
+}
+function vpCacheSet (videoId, products) {
+  const TTL = 12 * 60 * 60 * 1000 // 12h
+  videoProductsCache.set(videoId, { products, expiresAt: Date.now() + TTL })
 }
 
 app.get('/api/insight/:videoId/url', (req, res) => {
@@ -3316,6 +3537,17 @@ app.use('/api/kalo', (req, res) => {
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
   }
+})
+
+// ---------------------------------------------------------------------------
+// Error middleware — converte erros da fila (kaloPostAsync/kaloGetAsync) em 503
+// retriable. Handlers que já capturam individualmente não chegam aqui.
+// ---------------------------------------------------------------------------
+app.use((err, _req, res, _next) => {
+  if (err && err.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
+  if (err && err.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
+  console.error('[unhandled]', err && err.message ? err.message : err)
+  res.status(500).json({ success: false, message: err && err.message ? err.message : 'internal error' })
 })
 
 // ---------------------------------------------------------------------------
