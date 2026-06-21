@@ -1014,7 +1014,12 @@ app.get('/api/videos', async (req, res) => {
     // produto; a atribuição vem de /video/detail/product/queryList por vídeo.
     if (data && Array.isArray(data.data) && data.data.length > 0) {
       const enrichRange = getDateRange(days)
-      const MAX_ENRICH = 12 // só os top N por receita, pra não saturar a fila no cold start
+      const MAX_ENRICH = 12 // só os top N por receita são candidatos a enrich
+      // Teto GLOBAL de fetches de enrichment em voo. Sem isso, sob tráfego
+      // simultâneo cada request enfileira até 12 jobs e a VPS (CPU limitada)
+      // entra em throttle. Com o teto, no máx MAX_BG_ENRICH curls de enrichment
+      // pendentes no total (a fila ainda limita a 2 concorrentes de fato).
+      const MAX_BG_ENRICH = 3
       data.data.forEach((v, idx) => {
         if (idx >= MAX_ENRICH) { if (!v.products) v.products = []; return }
         const videoId = v.id
@@ -1022,7 +1027,7 @@ app.get('/api/videos', async (req, res) => {
         const cached = vpCacheGet(videoId)
         if (cached !== null) { v.products = cached; return }
         v.products = [] // resposta imediata; background popula pra próxima request
-        if (!vpInFlight.has(videoId)) {
+        if (!vpInFlight.has(videoId) && vpInFlight.size < MAX_BG_ENRICH) {
           vpInFlight.add(videoId)
           kaloPostAsync('/video/detail/product/queryList', {
             id: videoId, ...enrichRange, authority: true, pageNo: 1, pageSize: 10,
