@@ -24,7 +24,7 @@ jobs:
         env:
           PROXY_URL_TEMPLATE: ${{ secrets.PROXY_URL_TEMPLATE }}
         run: |
-          ECO=$(printf 'module.exports={apps:[{name:"kalodata-scraper",script:"server.js",cwd:"/root/kalodata-dashboard",env:{NODE_ENV:"production",PORT:4001,PROXY_URL_TEMPLATE:"%s"}}]}' "$PROXY_URL_TEMPLATE")
+          ECO=$(printf 'module.exports={apps:[{name:"kalodata-scraper",script:"server.js",cwd:"/root/kalodata-dashboard",max_restarts:5,min_uptime:10000,kill_timeout:5000,env:{NODE_ENV:"production",PORT:4001,PROXY_URL_TEMPLATE:"%s"}}]}' "$PROXY_URL_TEMPLATE")
           ssh -p ${{ secrets.SSH_PORT || 22 }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo '$ECO' > /root/kalodata-dashboard/ecosystem.config.cjs"
 
       - name: Pull, install, restart
@@ -38,6 +38,7 @@ jobs:
           git -C /root/kalodata-dashboard fetch origin main
           git -C /root/kalodata-dashboard reset --hard origin/main
           cd /root/kalodata-dashboard && npm install --omit=dev --no-audit --no-fund
+          pkill -9 -f curl_chrome116 || true
           pm2 startOrReload /root/kalodata-dashboard/ecosystem.config.cjs --update-env
           pm2 save
           EOF
