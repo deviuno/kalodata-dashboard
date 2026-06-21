@@ -1030,7 +1030,7 @@ app.get('/api/videos', async (req, res) => {
         if (!vpInFlight.has(videoId) && vpInFlight.size < MAX_BG_ENRICH) {
           vpInFlight.add(videoId)
           kaloPostAsync('/video/detail/product/queryList', {
-            id: videoId, ...enrichRange, authority: true, pageNo: 1, pageSize: 10,
+            id: videoId, country, ...enrichRange, days, pageNo: 1, pageSize: 10,
           }, country)
             .then(pd => {
               const items = Array.isArray(pd?.data) ? pd.data
