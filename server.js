@@ -3560,9 +3560,17 @@ app.get('/api/_debug/vq', async (req, res) => {
       country, ...range, pageNo: 1, pageSize: 3, cateIds: [], showCateIds: [],
       sort: [{ field: 'revenue', type: 'DESC' }],
     }, country)
-    const arr = Array.isArray(r?.data) ? r.data : Array.isArray(r?.list) ? r.list : Array.isArray(r?.data?.list) ? r.data.list : null
+    const arr = Array.isArray(r?.data) ? r.data
+      : Array.isArray(r?.data?.list) ? r.data.list
+      : Array.isArray(r?.list) ? r.list : null
     const item = arr && arr[0] ? arr[0] : null
-    res.json({ topKeys: Object.keys(r || {}), itemKeys: item ? Object.keys(item) : null, item })
+    res.json({
+      success: r?.success, code: r?.code, message: r?.message,
+      dataType: Array.isArray(r?.data) ? 'array' : (r?.data && typeof r.data === 'object' ? 'obj:' + Object.keys(r.data).join(',') : typeof r?.data),
+      itemKeys: item ? Object.keys(item) : null,
+      item,
+      rawHead: JSON.stringify(r || {}).slice(0, 1800),
+    })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
