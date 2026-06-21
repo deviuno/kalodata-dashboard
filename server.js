@@ -3550,6 +3550,29 @@ app.use('/api/kalo', (req, res) => {
   }
 })
 
+// TEMP DEBUG — inspecionar /video/detail/product/queryList (remover após diagnóstico).
+app.get('/api/_debug/vp/:id', async (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const days = parseInt(req.query.days) || 7
+    const range = getDateRange(days)
+    const id = req.params.id
+    const tryBody = async (label, body) => {
+      try {
+        const r = await kaloPostAsync('/video/detail/product/queryList', body, country)
+        const arr = Array.isArray(r?.data) ? r.data : Array.isArray(r?.list) ? r.list : Array.isArray(r?.items) ? r.items : null
+        return { label, topKeys: r && typeof r === 'object' ? Object.keys(r) : null, code: r?.code, message: r?.message, dataLen: arr ? arr.length : null, sample0: arr && arr[0] ? arr[0] : null }
+      } catch (e) { return { label, err: e.message } }
+    }
+    res.json({ id, country, days, range, results: [
+      await tryBody('v1_id_country_range_days_page', { id, country, ...range, days, pageNo: 1, pageSize: 10 }),
+      await tryBody('v2_id_country_range_authority', { id, country, ...range, authority: true }),
+      await tryBody('v3_videoId', { videoId: id, country, ...range, days }),
+      await tryBody('v4_id_only', { id, country, days }),
+    ] })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 // ---------------------------------------------------------------------------
 // Error middleware — converte erros da fila (kaloPostAsync/kaloGetAsync) em 503
 // retriable. Handlers que já capturam individualmente não chegam aqui.
