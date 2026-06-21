@@ -1014,7 +1014,11 @@ app.get('/api/videos', async (req, res) => {
     // produto; a atribuição vem de /video/detail/product/queryList por vídeo.
     if (data && Array.isArray(data.data) && data.data.length > 0) {
       const enrichRange = getDateRange(days)
-      const MAX_ENRICH = 12 // só os top N por receita são candidatos a enrich
+      // DESLIGADO (0): a atribuição produto-por-vídeo NÃO é exposta pelos endpoints
+      // do scraper Kalodata (/video/detail/product/* devolvem vazio; /video/queryList
+      // não traz produto). Só viria pela Open API oficial. Mantido o código pra
+      // reativar (>0) se um dia houver fonte. Front esconde a coluna quando vazio.
+      const MAX_ENRICH = 0
       // Teto GLOBAL de fetches de enrichment em voo. Sem isso, sob tráfego
       // simultâneo cada request enfileira até 12 jobs e a VPS (CPU limitada)
       // entra em throttle. Com o teto, no máx MAX_BG_ENRICH curls de enrichment
@@ -3548,30 +3552,6 @@ app.use('/api/kalo', (req, res) => {
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
   }
-})
-
-// TEMP DEBUG — dump cru de um item de /video/queryList (achar o campo de produto).
-app.get('/api/_debug/vq', async (req, res) => {
-  try {
-    const country = parseCountry(req)
-    const days = parseInt(req.query.days) || 7
-    const range = getDateRange(days)
-    const r = await kaloPostAsync('/video/queryList', {
-      country, ...range, pageNo: 1, pageSize: 3, cateIds: [], showCateIds: [],
-      sort: [{ field: 'revenue', type: 'DESC' }],
-    }, country)
-    const arr = Array.isArray(r?.data) ? r.data
-      : Array.isArray(r?.data?.list) ? r.data.list
-      : Array.isArray(r?.list) ? r.list : null
-    const item = arr && arr[0] ? arr[0] : null
-    res.json({
-      success: r?.success, code: r?.code, message: r?.message,
-      dataType: Array.isArray(r?.data) ? 'array' : (r?.data && typeof r.data === 'object' ? 'obj:' + Object.keys(r.data).join(',') : typeof r?.data),
-      itemKeys: item ? Object.keys(item) : null,
-      item,
-      rawHead: JSON.stringify(r || {}).slice(0, 1800),
-    })
-  } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // ---------------------------------------------------------------------------
