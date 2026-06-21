@@ -3557,18 +3557,21 @@ app.get('/api/_debug/vp/:id', async (req, res) => {
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
     const id = req.params.id
-    const tryBody = async (label, body) => {
+    const body = { id, country, ...range, days, pageNo: 1, pageSize: 10 }
+    const tryPath = async (p) => {
       try {
-        const r = await kaloPostAsync('/video/detail/product/queryList', body, country)
-        const arr = Array.isArray(r?.data) ? r.data : Array.isArray(r?.list) ? r.list : Array.isArray(r?.items) ? r.items : null
-        return { label, topKeys: r && typeof r === 'object' ? Object.keys(r) : null, code: r?.code, message: r?.message, dataLen: arr ? arr.length : null, sample0: arr && arr[0] ? arr[0] : null }
-      } catch (e) { return { label, err: e.message } }
+        const r = await kaloPostAsync(p, body, country)
+        const arr = Array.isArray(r?.data) ? r.data : Array.isArray(r?.list) ? r.list : Array.isArray(r?.data?.list) ? r.data.list : null
+        return { path: p, topKeys: r && typeof r === 'object' ? Object.keys(r) : null, msg: r?.message, dataLen: arr ? arr.length : (r?.data && typeof r.data === 'object' ? 'obj:' + Object.keys(r.data).join(',') : null), sample0: arr && arr[0] ? arr[0] : null }
+      } catch (e) { return { path: p, err: e.message } }
     }
-    res.json({ id, country, days, range, results: [
-      await tryBody('v1_id_country_range_days_page', { id, country, ...range, days, pageNo: 1, pageSize: 10 }),
-      await tryBody('v2_id_country_range_authority', { id, country, ...range, authority: true }),
-      await tryBody('v3_videoId', { videoId: id, country, ...range, days }),
-      await tryBody('v4_id_only', { id, country, days }),
+    res.json({ id, country, days, results: [
+      await tryPath('/video/detail/product/queryList'),
+      await tryPath('/video/detail/product/list'),
+      await tryPath('/video/detail/searchProducts'),
+      await tryPath('/video/detail/products'),
+      await tryPath('/video/detail/total'),
+      await tryPath('/video/detail'),
     ] })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
