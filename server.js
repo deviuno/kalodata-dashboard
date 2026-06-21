@@ -3550,29 +3550,19 @@ app.use('/api/kalo', (req, res) => {
   }
 })
 
-// TEMP DEBUG — inspecionar /video/detail/product/queryList (remover após diagnóstico).
-app.get('/api/_debug/vp/:id', async (req, res) => {
+// TEMP DEBUG — dump cru de um item de /video/queryList (achar o campo de produto).
+app.get('/api/_debug/vq', async (req, res) => {
   try {
     const country = parseCountry(req)
     const days = parseInt(req.query.days) || 7
     const range = getDateRange(days)
-    const id = req.params.id
-    const body = { id, country, ...range, days, pageNo: 1, pageSize: 10 }
-    const tryPath = async (p) => {
-      try {
-        const r = await kaloPostAsync(p, body, country)
-        const arr = Array.isArray(r?.data) ? r.data : Array.isArray(r?.list) ? r.list : Array.isArray(r?.data?.list) ? r.data.list : null
-        return { path: p, topKeys: r && typeof r === 'object' ? Object.keys(r) : null, msg: r?.message, dataLen: arr ? arr.length : (r?.data && typeof r.data === 'object' ? 'obj:' + Object.keys(r.data).join(',') : null), sample0: arr && arr[0] ? arr[0] : null }
-      } catch (e) { return { path: p, err: e.message } }
-    }
-    res.json({ id, country, days, results: [
-      await tryPath('/video/detail/product/queryList'),
-      await tryPath('/video/detail/product/list'),
-      await tryPath('/video/detail/searchProducts'),
-      await tryPath('/video/detail/products'),
-      await tryPath('/video/detail/total'),
-      await tryPath('/video/detail'),
-    ] })
+    const r = await kaloPostAsync('/video/queryList', {
+      country, ...range, pageNo: 1, pageSize: 3, cateIds: [], showCateIds: [],
+      sort: [{ field: 'revenue', type: 'DESC' }],
+    }, country)
+    const arr = Array.isArray(r?.data) ? r.data : Array.isArray(r?.list) ? r.list : Array.isArray(r?.data?.list) ? r.data.list : null
+    const item = arr && arr[0] ? arr[0] : null
+    res.json({ topKeys: Object.keys(r || {}), itemKeys: item ? Object.keys(item) : null, item })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
