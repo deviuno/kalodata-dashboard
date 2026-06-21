@@ -1042,7 +1042,13 @@ app.get('/api/videos', async (req, res) => {
               })).filter(p => p.id)
               vpCacheSet(videoId, products)
             })
-            .catch(e => console.warn(`[enrich-bg] ${videoId}: ${e.message}`))
+            .catch(e => {
+              // Negative cache: cacheia [] também no erro pra NÃO re-disparar a
+              // cada request (era a carga recorrente que estressava a VPS). Cada
+              // vídeo busca no máx 1× por 12h, com ou sem sucesso.
+              console.warn(`[enrich-bg] ${videoId}: ${e.message}`)
+              vpCacheSet(videoId, [])
+            })
             .finally(() => vpInFlight.delete(videoId))
         }
       })
