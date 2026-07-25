@@ -765,29 +765,28 @@ app.get('/api/docs.json', (_req, res) => res.json(swaggerSpec))
  *         description: Erro interno
  */
 // ---------------------------------------------------------------------------
-// Árvore de categorias (GET /api/categories?type=product&country=BR)
+// Árvore de categorias (GET /api/categories?country=BR)
 // ---------------------------------------------------------------------------
-// Fonte: GET /filterGroup/queryFilterTemplate?type=<page> — é o `fetchListFilter`
-// do bundle do site, que popula o Cascader de categorias (cateOptions) das
-// páginas de listagem. Devolvemos o template CRU (o caller extrai a árvore).
-// Cache por type+country: 7 dias em sucesso, 1h em falha.
-const cateTreeCache = new Map() // key -> { body, expiresAt }
+// Fonte: POST /api/configurations com [{key:'global.category.tree'}] — é o
+// `config/fetchCategoryConfig` do bundle do site, que popula o Cascader de
+// categorias das listagens. Devolvemos o value cru (árvore completa L1>L2>L3).
+// Cache por país: 7 dias em sucesso, 1h em falha.
+const cateTreeCache = new Map() // country -> { body, status, expiresAt }
 
 app.get('/api/categories', (req, res) => {
   const country = parseCountry(req)
-  const type = /^[a-z]+$/i.test(String(req.query.type || '')) ? String(req.query.type) : 'product'
-  const key = `${type}:${country}`
-  const hit = cateTreeCache.get(key)
-  if (hit && Date.now() < hit.expiresAt) return res.json(hit.body)
+  const hit = cateTreeCache.get(country)
+  if (hit && Date.now() < hit.expiresAt) return res.status(hit.status).json(hit.body)
   try {
-    const out = kaloGet(`/filterGroup/queryFilterTemplate?type=${type}`, country)
+    const out = kaloPost('/api/configurations', [{ key: 'global.category.tree' }], country)
     const ok = out && out.success !== false && (out.data ?? out.list)
-    const body = { success: !!ok, source_path: '/filterGroup/queryFilterTemplate', type, data: out?.data ?? out?.list ?? null }
-    cateTreeCache.set(key, { body, expiresAt: Date.now() + (ok ? 7 * 86400000 : 3600000) })
-    return res.status(ok ? 200 : 502).json(body)
+    const body = { success: !!ok, source_path: '/api/configurations', data: out?.data ?? out?.list ?? null }
+    const status = ok ? 200 : 502
+    cateTreeCache.set(country, { body, status, expiresAt: Date.now() + (ok ? 7 * 86400000 : 3600000) })
+    return res.status(status).json(body)
   } catch (e) {
     const body = { success: false, message: e.message }
-    cateTreeCache.set(key, { body, expiresAt: Date.now() + 3600000 })
+    cateTreeCache.set(country, { body, status: 500, expiresAt: Date.now() + 3600000 })
     return res.status(500).json(body)
   }
 })
