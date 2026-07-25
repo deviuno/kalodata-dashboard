@@ -765,40 +765,31 @@ app.get('/api/docs.json', (_req, res) => res.json(swaggerSpec))
  *         description: Erro interno
  */
 // ---------------------------------------------------------------------------
-// Árvore de categorias (GET /api/categories)
+// Árvore de categorias (GET /api/categories?type=product&country=BR)
 // ---------------------------------------------------------------------------
-// O path upstream da árvore do Cascader nunca foi confirmado — sondamos os
-// candidatos prováveis UMA vez e cacheamos o resultado (7 dias em sucesso,
-// 1h em falha total, pra não martelar a conta).
-const CATEGORY_TREE_CANDIDATES = [
-  '/category/queryList',
-  '/category/list',
-  '/common/category/queryList',
-  '/product/category/queryList',
-  '/category/queryAll',
-]
-let cateTreeCache = null // { data, expiresAt, path }
+// Fonte: GET /filterGroup/queryFilterTemplate?type=<page> — é o `fetchListFilter`
+// do bundle do site, que popula o Cascader de categorias (cateOptions) das
+// páginas de listagem. Devolvemos o template CRU (o caller extrai a árvore).
+// Cache por type+country: 7 dias em sucesso, 1h em falha.
+const cateTreeCache = new Map() // key -> { body, expiresAt }
 
-app.get('/api/categories', async (req, res) => {
+app.get('/api/categories', (req, res) => {
   const country = parseCountry(req)
-  if (cateTreeCache && Date.now() < cateTreeCache.expiresAt) {
-    return res.json({ success: !!cateTreeCache.data, source_path: cateTreeCache.path, data: cateTreeCache.data })
+  const type = /^[a-z]+$/i.test(String(req.query.type || '')) ? String(req.query.type) : 'product'
+  const key = `${type}:${country}`
+  const hit = cateTreeCache.get(key)
+  if (hit && Date.now() < hit.expiresAt) return res.json(hit.body)
+  try {
+    const out = kaloGet(`/filterGroup/queryFilterTemplate?type=${type}`, country)
+    const ok = out && out.success !== false && (out.data ?? out.list)
+    const body = { success: !!ok, source_path: '/filterGroup/queryFilterTemplate', type, data: out?.data ?? out?.list ?? null }
+    cateTreeCache.set(key, { body, expiresAt: Date.now() + (ok ? 7 * 86400000 : 3600000) })
+    return res.status(ok ? 200 : 502).json(body)
+  } catch (e) {
+    const body = { success: false, message: e.message }
+    cateTreeCache.set(key, { body, expiresAt: Date.now() + 3600000 })
+    return res.status(500).json(body)
   }
-  for (const path of CATEGORY_TREE_CANDIDATES) {
-    try {
-      const out = kaloPost(path, { country }, country)
-      const data = out?.data ?? out?.list ?? null
-      const nonEmpty = Array.isArray(data) ? data.length > 0 : (data && typeof data === 'object' && Object.keys(data).length > 0)
-      if (out?.success !== false && nonEmpty) {
-        cateTreeCache = { data, path, expiresAt: Date.now() + 7 * 86400000 }
-        console.log(`[categories] árvore obtida via ${path}`)
-        return res.json({ success: true, source_path: path, data })
-      }
-    } catch { /* tenta o próximo */ }
-    await sleep(800)
-  }
-  cateTreeCache = { data: null, path: null, expiresAt: Date.now() + 3600000 }
-  res.status(404).json({ success: false, message: 'category tree path not found upstream', tried: CATEGORY_TREE_CANDIDATES })
 })
 
 // Filtro de categoria nas listagens: `?cateIds=601450,824328` (CSV) ou o legado
