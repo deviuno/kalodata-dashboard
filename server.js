@@ -764,6 +764,55 @@ app.get('/api/docs.json', (_req, res) => res.json(swaggerSpec))
  *       500:
  *         description: Erro interno
  */
+// ---------------------------------------------------------------------------
+// Árvore de categorias (GET /api/categories)
+// ---------------------------------------------------------------------------
+// O path upstream da árvore do Cascader nunca foi confirmado — sondamos os
+// candidatos prováveis UMA vez e cacheamos o resultado (7 dias em sucesso,
+// 1h em falha total, pra não martelar a conta).
+const CATEGORY_TREE_CANDIDATES = [
+  '/category/queryList',
+  '/category/list',
+  '/common/category/queryList',
+  '/product/category/queryList',
+  '/category/queryAll',
+]
+let cateTreeCache = null // { data, expiresAt, path }
+
+app.get('/api/categories', async (req, res) => {
+  const country = parseCountry(req)
+  if (cateTreeCache && Date.now() < cateTreeCache.expiresAt) {
+    return res.json({ success: !!cateTreeCache.data, source_path: cateTreeCache.path, data: cateTreeCache.data })
+  }
+  for (const path of CATEGORY_TREE_CANDIDATES) {
+    try {
+      const out = kaloPost(path, { country }, country)
+      const data = out?.data ?? out?.list ?? null
+      const nonEmpty = Array.isArray(data) ? data.length > 0 : (data && typeof data === 'object' && Object.keys(data).length > 0)
+      if (out?.success !== false && nonEmpty) {
+        cateTreeCache = { data, path, expiresAt: Date.now() + 7 * 86400000 }
+        console.log(`[categories] árvore obtida via ${path}`)
+        return res.json({ success: true, source_path: path, data })
+      }
+    } catch { /* tenta o próximo */ }
+    await sleep(800)
+  }
+  cateTreeCache = { data: null, path: null, expiresAt: Date.now() + 3600000 }
+  res.status(404).json({ success: false, message: 'category tree path not found upstream', tried: CATEGORY_TREE_CANDIDATES })
+})
+
+// Filtro de categoria nas listagens: `?cateIds=601450,824328` (CSV) ou o legado
+// `?cateId=601450` (singular). IDs compostos de subnível ("601450-848776") são
+// aceitos como vêm — o upstream usa esse formato pra L2/L3. Vazio = sem filtro.
+function parseCateIds(req) {
+  const raw = req.query.cateIds ?? req.query.cateId ?? ''
+  return String(raw)
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => /^\d+(-\d+){0,2}$/.test(s))
+    .slice(0, 10)
+}
+
 app.get('/api/products', async (req, res) => {
   try {
     const country = parseCountry(req)
@@ -771,6 +820,7 @@ app.get('/api/products', async (req, res) => {
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
     const sortField = req.query.sortField || 'revenue'
+    const cateIds = parseCateIds(req)
     const range = getDateRange(days)
 
     const data = await kaloPostWithRetry('/product/queryList', () => ({
@@ -778,10 +828,10 @@ app.get('/api/products', async (req, res) => {
       ...range,
       pageNo: page,
       pageSize,
-      cateIds: [],
+      cateIds,
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }), country, { targetCount: Math.min(pageSize - 5, 55) })
+    }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) })
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -995,6 +1045,7 @@ app.get('/api/videos', async (req, res) => {
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
     const sortField = req.query.sortField || 'revenue'
+    const cateIds = parseCateIds(req)
     const range = getDateRange(days)
 
     const data = await kaloPostWithRetry('/video/queryList', () => ({
@@ -1002,10 +1053,10 @@ app.get('/api/videos', async (req, res) => {
       ...range,
       pageNo: page,
       pageSize,
-      cateIds: [],
+      cateIds,
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }), country, { targetCount: Math.min(pageSize - 5, 55) })
+    }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) })
 
     // Coluna Produto: enriquece com products:[{id,title}] em STALE-WHILE-REVALIDATE.
     // NUNCA dá await aqui — cache hit entra na resposta; cache miss volta [] e dispara
@@ -1305,7 +1356,7 @@ app.get('/api/shops', async (req, res) => {
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
     const sortField = req.query.sortField || 'revenue'
-    const cateIds = req.query.cateId ? [String(req.query.cateId)] : []
+    const cateIds = parseCateIds(req)
     const range = getDateRange(days)
 
     const data = await kaloPostWithRetry('/shop/queryList', () => ({
@@ -1315,7 +1366,7 @@ app.get('/api/shops', async (req, res) => {
       pageSize,
       cateIds,
       sort: [{ field: sortField, type: 'DESC' }],
-    }), country, { targetCount: Math.min(pageSize - 5, 55) })
+    }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) })
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1933,6 +1984,7 @@ app.get('/api/creators', async (req, res) => {
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 60
     const sortField = req.query.sortField || 'revenue'
+    const cateIds = parseCateIds(req)
     const range = getDateRange(days)
 
     const UPSTREAM_CREATOR_PAGE = 10  // kalodata retorna 10 criadores por página
@@ -1941,7 +1993,7 @@ app.get('/api/creators', async (req, res) => {
       ...range,
       pageNo,
       pageSize: UPSTREAM_CREATOR_PAGE,
-      cateIds: [],
+      cateIds,
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
     }), country, {
