@@ -273,6 +273,16 @@ function requireAdminKey(req, res, next) {
 //   invalid_url | not_found | private | region_blocked | too_large |
 //   timeout | ytdlp_missing | download_failed
 const TIKTOK_URL_RE = /^https?:\/\/(www\.|vm\.|vt\.|m\.)?tiktok\.com\/\S+$/i
+
+// GET /api/tiktok/health — versão do yt-dlp instalada (diagnóstico).
+app.get('/api/tiktok/health', requireAdminKey, (_req, res) => {
+  execFile('yt-dlp', ['--version'], { timeout: 10000 }, (err, stdout) => {
+    if (err) return res.json({ success: false, ytdlp: null, error: err.code === 'ENOENT' ? 'ytdlp_missing' : String(err.message).slice(0, 120) })
+    execFile('which', ['yt-dlp'], { timeout: 5000 }, (_e2, whichOut) => {
+      res.json({ success: true, ytdlp: String(stdout).trim(), path: String(whichOut || '').trim() })
+    })
+  })
+})
 app.post('/api/tiktok/fetch', requireAdminKey, (req, res) => {
   const url = String((req.body && req.body.url) || '').trim()
   if (!TIKTOK_URL_RE.test(url)) {
