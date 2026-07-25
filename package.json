@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/ensure-ytdlp.cjs",
     "dev": "node server.js & vite",
     "server": "node server.js",
     "client": "vite",

@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { execFileSync, execFile } from 'child_process'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, statSync, createReadStream, unlinkSync } from 'fs'
 import { Resend } from 'resend'
 import cron from 'node-cron'
 import swaggerJsdoc from 'swagger-jsdoc'
@@ -261,6 +261,61 @@ function requireAdminKey(req, res, next) {
   }
   return next()
 }
+
+// ---------------------------------------------------------------------------
+// TikTok fetch (download de vídeo público via yt-dlp)
+// ---------------------------------------------------------------------------
+// POST /api/tiktok/fetch  body: { url }
+// Baixa o mp4 de um vídeo público do TikTok e devolve o binário (video/mp4).
+// Usado pela edge import-tiktok-video do Domma (usuário cola o link no chat e
+// o vídeo entra na conversa como anexo analisável). Erros viram códigos
+// estáveis pra UI explicar o motivo ao usuário:
+//   invalid_url | not_found | private | region_blocked | too_large |
+//   timeout | ytdlp_missing | download_failed
+const TIKTOK_URL_RE = /^https?:\/\/(www\.|vm\.|vt\.|m\.)?tiktok\.com\/\S+$/i
+app.post('/api/tiktok/fetch', requireAdminKey, (req, res) => {
+  const url = String((req.body && req.body.url) || '').trim()
+  if (!TIKTOK_URL_RE.test(url)) {
+    return res.status(400).json({ success: false, code: 'invalid_url', message: 'URL do TikTok inválida.' })
+  }
+  const out = `/tmp/tkfetch_${Date.now()}_${Math.floor(Math.random() * 1e6)}.mp4`
+  const args = [
+    url,
+    '-o', out,
+    '--no-playlist',
+    '-f', 'b[ext=mp4]/b', // um arquivo só (sem merge — dispensa ffmpeg)
+    '--max-filesize', '250M',
+    '--no-progress',
+    '--socket-timeout', '20',
+  ]
+  execFile('yt-dlp', args, { timeout: 90000 }, (err, _stdout, stderr) => {
+    const cleanup = () => { try { unlinkSync(out) } catch { /* já removido */ } }
+    if (err) {
+      cleanup()
+      const s = String(stderr || err.message || '')
+      let code = 'download_failed'
+      if (err.code === 'ENOENT') code = 'ytdlp_missing'
+      else if (err.killed || /timed? ?out/i.test(s)) code = 'timeout'
+      else if (/private/i.test(s)) code = 'private'
+      else if (/not available in your|geo.?restrict/i.test(s)) code = 'region_blocked'
+      else if (/unavailable|does not exist|404|no longer|unable to find/i.test(s)) code = 'not_found'
+      else if (/max-filesize|file is larger/i.test(s)) code = 'too_large'
+      console.warn('[tiktok/fetch] falha', code, s.slice(0, 300))
+      return res.status(422).json({ success: false, code, message: s.slice(0, 300) })
+    }
+    if (!existsSync(out)) {
+      // --max-filesize estourado faz o yt-dlp pular o download sem erro e sem arquivo
+      return res.status(422).json({ success: false, code: 'too_large', message: 'Vídeo acima do limite de 250MB.' })
+    }
+    const size = statSync(out).size
+    res.setHeader('Content-Type', 'video/mp4')
+    res.setHeader('Content-Length', String(size))
+    const stream = createReadStream(out)
+    stream.pipe(res)
+    stream.on('close', cleanup)
+    stream.on('error', () => { cleanup(); try { res.destroy() } catch { /* já fechado */ } })
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Cookies
