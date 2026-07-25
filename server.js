@@ -279,30 +279,35 @@ app.post('/api/tiktok/fetch', requireAdminKey, (req, res) => {
     return res.status(400).json({ success: false, code: 'invalid_url', message: 'URL do TikTok inválida.' })
   }
   const out = `/tmp/tkfetch_${Date.now()}_${Math.floor(Math.random() * 1e6)}.mp4`
-  const args = [
-    url,
-    '-o', out,
-    '--no-playlist',
-    '-f', 'b[ext=mp4]/b', // um arquivo só (sem merge — dispensa ffmpeg)
-    '--max-filesize', '250M',
-    '--no-progress',
-    '--socket-timeout', '20',
-  ]
-  execFile('yt-dlp', args, { timeout: 90000 }, (err, _stdout, stderr) => {
-    const cleanup = () => { try { unlinkSync(out) } catch { /* já removido */ } }
-    if (err) {
-      cleanup()
-      const s = String(stderr || err.message || '')
-      let code = 'download_failed'
-      if (err.code === 'ENOENT') code = 'ytdlp_missing'
-      else if (err.killed || /timed? ?out/i.test(s)) code = 'timeout'
-      else if (/private/i.test(s)) code = 'private'
-      else if (/not available in your|geo.?restrict/i.test(s)) code = 'region_blocked'
-      else if (/unavailable|does not exist|404|no longer|unable to find/i.test(s)) code = 'not_found'
-      else if (/max-filesize|file is larger/i.test(s)) code = 'too_large'
-      console.warn('[tiktok/fetch] falha', code, s.slice(0, 300))
-      return res.status(422).json({ success: false, code, message: s.slice(0, 300) })
-    }
+  const cleanup = () => { try { unlinkSync(out) } catch { /* já removido */ } }
+
+  const classify = (err, stderr) => {
+    const s = String(stderr || (err && err.message) || '')
+    if (err && err.code === 'ENOENT') return 'ytdlp_missing'
+    if ((err && err.killed) || /timed? ?out/i.test(s)) return 'timeout'
+    if (/private/i.test(s)) return 'private'
+    if (/not available in your|geo.?restrict/i.test(s)) return 'region_blocked'
+    if (/unavailable|does not exist|404|no longer|unable to find/i.test(s)) return 'not_found'
+    if (/max-filesize|file is larger/i.test(s)) return 'too_large'
+    return 'download_failed'
+  }
+
+  const roda = (proxy, cb) => {
+    const args = [
+      url,
+      '-o', out,
+      '--no-playlist',
+      '-f', 'b[ext=mp4]/b', // um arquivo só (sem merge — dispensa ffmpeg)
+      '--max-filesize', '250M',
+      '--no-progress',
+      '--socket-timeout', '20',
+      '--force-overwrites',
+    ]
+    if (proxy) args.push('--proxy', proxy)
+    execFile('yt-dlp', args, { timeout: 90000 }, cb)
+  }
+
+  const responde = () => {
     if (!existsSync(out)) {
       // --max-filesize estourado faz o yt-dlp pular o download sem erro e sem arquivo
       return res.status(422).json({ success: false, code: 'too_large', message: 'Vídeo acima do limite de 250MB.' })
@@ -314,6 +319,31 @@ app.post('/api/tiktok/fetch', requireAdminKey, (req, res) => {
     stream.pipe(res)
     stream.on('close', cleanup)
     stream.on('error', () => { cleanup(); try { res.destroy() } catch { /* já fechado */ } })
+  }
+
+  // 1ª tentativa direto (IP da VPS); se o TikTok barrar (datacenter), repete
+  // com o proxy residencial geo BR — mesmo esquema do scraper.
+  roda(null, (err, _stdout, stderr) => {
+    if (!err) return responde()
+    const code1 = classify(err, stderr)
+    if (code1 === 'ytdlp_missing' || code1 === 'private' || code1 === 'not_found' || code1 === 'too_large') {
+      cleanup()
+      return res.status(422).json({ success: false, code: code1, message: String(stderr || '').slice(0, 300) })
+    }
+    const proxy = getNextProxy('br')
+    if (!proxy) {
+      cleanup()
+      console.warn('[tiktok/fetch] falha sem proxy disponível', code1, String(stderr || '').slice(0, 200))
+      return res.status(422).json({ success: false, code: code1, message: String(stderr || '').slice(0, 300) })
+    }
+    console.warn('[tiktok/fetch] direto falhou (' + code1 + '), tentando via proxy')
+    roda(proxy, (err2, _stdout2, stderr2) => {
+      if (!err2) return responde()
+      cleanup()
+      const code2 = classify(err2, stderr2)
+      console.warn('[tiktok/fetch] falha também via proxy', code2, String(stderr2 || '').slice(0, 300))
+      return res.status(422).json({ success: false, code: code2, message: String(stderr2 || '').slice(0, 300) })
+    })
   })
 })
 

@@ -5,11 +5,8 @@ const { execSync } = require('child_process')
 
 if (process.platform !== 'linux') process.exit(0)
 
-try {
-  execSync('command -v yt-dlp', { stdio: 'ignore', shell: '/bin/bash' })
-  process.exit(0) // já instalado
-} catch { /* segue pra instalação */ }
-
+// SEMPRE tenta atualizar via pip (o TikTok quebra extractors antigos toda
+// hora; a versão do apt é velha demais e falha com "Expecting value").
 const tentativas = [
   'pip3 install --break-system-packages -U yt-dlp',
   'pip3 install -U yt-dlp',
