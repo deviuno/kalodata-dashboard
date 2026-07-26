@@ -324,12 +324,13 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       url,
       '-o', out,
       '--no-playlist',
-      // COM ÁUDIO obrigatório: "b[ext=mp4]" sozinho pegava formato video-only
-      // em alguns casos (Instagram serve vídeo/áudio separados; certos TikToks
-      // têm formato de download sem trilha) — caso real "baixou sem áudio"
-      // 26/07. Ordem: mp4 mudo com áudio > qualquer mudo com áudio > merge
-      // vídeo+áudio via ffmpeg (existe na VPS) > o que der.
-      '-f', 'b[acodec!=none][ext=mp4]/b[acodec!=none]/bv*+ba/b',
+      // H264 PRIMEIRO: os formatos bytevc1/hevc "1080p" do TikTok vêm SEM
+      // trilha de áudio na prática (o metadado mente dizendo aac — verificado
+      // com ffprobe em 26/07, caso real "baixou sem áudio"). Os h264 são os
+      // streams de reprodução reais, com áudio e compatíveis com qualquer
+      // player/editor. Depois: qualquer muxed com áudio > merge vídeo+áudio
+      // via ffmpeg (existe na VPS) > o que der.
+      '-f', 'b[vcodec^=h264][ext=mp4]/b[acodec!=none][ext=mp4]/b[acodec!=none]/bv*+ba/b',
       '--merge-output-format', 'mp4',
       '--max-filesize', '250M',
       '--no-progress',
