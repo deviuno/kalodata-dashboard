@@ -324,7 +324,13 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       url,
       '-o', out,
       '--no-playlist',
-      '-f', 'b[ext=mp4]/b', // um arquivo só (sem merge — dispensa ffmpeg)
+      // COM ÁUDIO obrigatório: "b[ext=mp4]" sozinho pegava formato video-only
+      // em alguns casos (Instagram serve vídeo/áudio separados; certos TikToks
+      // têm formato de download sem trilha) — caso real "baixou sem áudio"
+      // 26/07. Ordem: mp4 mudo com áudio > qualquer mudo com áudio > merge
+      // vídeo+áudio via ffmpeg (existe na VPS) > o que der.
+      '-f', 'b[acodec!=none][ext=mp4]/b[acodec!=none]/bv*+ba/b',
+      '--merge-output-format', 'mp4',
       '--max-filesize', '250M',
       '--no-progress',
       '--socket-timeout', '20',
