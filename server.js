@@ -369,8 +369,20 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
     console.warn('[video-download] direto falhou (' + code1 + '), tentando via proxy')
     roda(proxy, (err2, _stdout2, stderr2) => {
       if (!err2) return responde()
-      cleanup()
       const code2 = classify(err2, stderr2)
+      // 3ª tentativa com IP NOVO do proxy rotativo — o TikTok às vezes barra um
+      // IP específico da vez (422 transitório visto em produção 26/07).
+      if (code2 === 'download_failed' || code2 === 'timeout') {
+        console.warn('[video-download] proxy falhou (' + code2 + '), última tentativa com IP novo')
+        return roda(getNextProxy('br'), (err3, _stdout3, stderr3) => {
+          if (!err3) return responde()
+          cleanup()
+          const code3 = classify(err3, stderr3)
+          console.warn('[video-download] falha nas 3 tentativas', code3, String(stderr3 || '').slice(0, 300))
+          return fim(() => res.status(422).json({ success: false, code: code3, message: String(stderr3 || '').slice(0, 300) }))
+        })
+      }
+      cleanup()
       console.warn('[video-download] falha também via proxy', code2, String(stderr2 || '').slice(0, 300))
       return fim(() => res.status(422).json({ success: false, code: code2, message: String(stderr2 || '').slice(0, 300) }))
     })
