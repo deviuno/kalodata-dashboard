@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { execFileSync, execFile } from 'child_process'
+import { createHmac } from 'crypto'
 import { readFileSync, writeFileSync, existsSync, statSync, createReadStream, unlinkSync } from 'fs'
 import { Resend } from 'resend'
 import cron from 'node-cron'
@@ -284,19 +285,34 @@ app.get('/api/tiktok/health', requireAdminKey, (_req, res) => {
     res.json({ success: true, ytdlp: String(stdout).trim(), bin: YTDLP_BIN })
   })
 })
-app.post('/api/tiktok/fetch', requireAdminKey, (req, res) => {
-  const url = String((req.body && req.body.url) || '').trim()
-  if (!TIKTOK_URL_RE.test(url)) {
-    return res.status(400).json({ success: false, code: 'invalid_url', message: 'URL do TikTok inválida.' })
-  }
-  const out = `/tmp/tkfetch_${Date.now()}_${Math.floor(Math.random() * 1e6)}.mp4`
+// URLs aceitas: TikTok (inclui encurtadores vm./vt.) e Instagram (reel/p/tv/share).
+const INSTAGRAM_URL_RE = /^https?:\/\/(www\.)?instagram\.com\/\S+$/i
+function urlDeVideoValida (url) {
+  return TIKTOK_URL_RE.test(url) || INSTAGRAM_URL_RE.test(url)
+}
+
+// Nome de arquivo amigável pro download (id do TikTok ou shortcode do Insta).
+function nomeArquivoVideo (url) {
+  const tk = url.match(/video\/(\d{8,})/)
+  if (tk) return `tiktok-${tk[1]}.mp4`
+  const ig = url.match(/instagram\.com\/(?:reels?|p|tv)\/([A-Za-z0-9_-]{5,})/i)
+  if (ig) return `instagram-${ig[1]}.mp4`
+  return `video-${Date.now()}.mp4`
+}
+
+// Núcleo compartilhado: baixa com yt-dlp (retry via proxy residencial BR) e
+// STREAMA o arquivo na resposta. `onFim` roda ao terminar (sucesso ou falha)
+// — usado pelo rate limit de concorrência da rota pública.
+function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {}) {
+  const out = `/tmp/dlfetch_${Date.now()}_${Math.floor(Math.random() * 1e6)}.mp4`
   const cleanup = () => { try { unlinkSync(out) } catch { /* já removido */ } }
+  const fim = (fn) => { onFim(); return fn() }
 
   const classify = (err, stderr) => {
     const s = String(stderr || (err && err.message) || '')
     if (err && err.code === 'ENOENT') return 'ytdlp_missing'
     if ((err && err.killed) || /timed? ?out/i.test(s)) return 'timeout'
-    if (/private/i.test(s)) return 'private'
+    if (/private|login required|rate.?limit reached|requested content is not available/i.test(s)) return 'private'
     if (/not available in your|geo.?restrict/i.test(s)) return 'region_blocked'
     if (/unavailable|does not exist|404|no longer|unable to find/i.test(s)) return 'not_found'
     if (/max-filesize|file is larger/i.test(s)) return 'too_large'
@@ -321,41 +337,119 @@ app.post('/api/tiktok/fetch', requireAdminKey, (req, res) => {
   const responde = () => {
     if (!existsSync(out)) {
       // --max-filesize estourado faz o yt-dlp pular o download sem erro e sem arquivo
-      return res.status(422).json({ success: false, code: 'too_large', message: 'Vídeo acima do limite de 250MB.' })
+      return fim(() => res.status(422).json({ success: false, code: 'too_large', message: 'Vídeo acima do limite de 250MB.' }))
     }
     const size = statSync(out).size
     res.setHeader('Content-Type', 'video/mp4')
     res.setHeader('Content-Length', String(size))
+    if (attachment) {
+      res.setHeader('Content-Disposition', `attachment; filename="${nomeArquivoVideo(url)}"`)
+    }
     const stream = createReadStream(out)
     stream.pipe(res)
-    stream.on('close', cleanup)
-    stream.on('error', () => { cleanup(); try { res.destroy() } catch { /* já fechado */ } })
+    stream.on('close', () => { cleanup(); onFim() })
+    stream.on('error', () => { cleanup(); onFim(); try { res.destroy() } catch { /* já fechado */ } })
   }
 
-  // 1ª tentativa direto (IP da VPS); se o TikTok barrar (datacenter), repete
-  // com o proxy residencial geo BR — mesmo esquema do scraper.
+  // 1ª tentativa direto (IP da VPS); se a plataforma barrar (datacenter),
+  // repete com o proxy residencial geo BR — mesmo esquema do scraper.
   roda(null, (err, _stdout, stderr) => {
     if (!err) return responde()
     const code1 = classify(err, stderr)
-    if (code1 === 'ytdlp_missing' || code1 === 'private' || code1 === 'not_found' || code1 === 'too_large') {
+    if (code1 === 'ytdlp_missing' || code1 === 'not_found' || code1 === 'too_large') {
       cleanup()
-      return res.status(422).json({ success: false, code: code1, message: String(stderr || '').slice(0, 300) })
+      return fim(() => res.status(422).json({ success: false, code: code1, message: String(stderr || '').slice(0, 300) }))
     }
     const proxy = getNextProxy('br')
     if (!proxy) {
       cleanup()
-      console.warn('[tiktok/fetch] falha sem proxy disponível', code1, String(stderr || '').slice(0, 200))
-      return res.status(422).json({ success: false, code: code1, message: String(stderr || '').slice(0, 300) })
+      console.warn('[video-download] falha sem proxy disponível', code1, String(stderr || '').slice(0, 200))
+      return fim(() => res.status(422).json({ success: false, code: code1, message: String(stderr || '').slice(0, 300) }))
     }
-    console.warn('[tiktok/fetch] direto falhou (' + code1 + '), tentando via proxy')
+    console.warn('[video-download] direto falhou (' + code1 + '), tentando via proxy')
     roda(proxy, (err2, _stdout2, stderr2) => {
       if (!err2) return responde()
       cleanup()
       const code2 = classify(err2, stderr2)
-      console.warn('[tiktok/fetch] falha também via proxy', code2, String(stderr2 || '').slice(0, 300))
-      return res.status(422).json({ success: false, code: code2, message: String(stderr2 || '').slice(0, 300) })
+      console.warn('[video-download] falha também via proxy', code2, String(stderr2 || '').slice(0, 300))
+      return fim(() => res.status(422).json({ success: false, code: code2, message: String(stderr2 || '').slice(0, 300) }))
     })
   })
+}
+
+// Rota ADMIN (usada pela edge import-tiktok-video do chat). Aceita TikTok e
+// Instagram — mesmo contrato de antes.
+app.post('/api/tiktok/fetch', requireAdminKey, (req, res) => {
+  const url = String((req.body && req.body.url) || '').trim()
+  if (!urlDeVideoValida(url)) {
+    return res.status(400).json({ success: false, code: 'invalid_url', message: 'URL inválida (aceito TikTok e Instagram).' })
+  }
+  baixarVideoTo(res, url)
+})
+
+// ---------------------------------------------------------------------------
+// Download PÚBLICO (página /baixar do domma.ai)
+// ---------------------------------------------------------------------------
+// Sem admin key: qualquer visitante baixa 1 vídeo por vez, com teto diário por
+// IP. Assinantes mandam o header `x-download-permit` (emitido pela edge
+// download-permit, HMAC com a MESMA admin_key — validação offline aqui) e
+// ganham teto alto pro modo lote.
+const DL_ANON_POR_DIA = 5
+const DL_ASSINANTE_POR_DIA = 200
+const dlJanelas = new Map() // chave -> { dia: 'YYYY-MM-DD', count, ativo: bool }
+
+function validaPermit (token) {
+  if (!token) return null
+  const adminKey = (loadConfig().admin_key || '').trim()
+  if (!adminKey) return null
+  const partes = String(token).split('.')
+  if (partes.length !== 3) return null
+  const [exp, userId, sig] = partes
+  if (!/^\d+$/.test(exp) || Number(exp) < Date.now() / 1000) return null
+  const want = createHmac('sha256', adminKey).update(exp + '.' + userId).digest('hex')
+  if (want !== sig) return null
+  return { userId }
+}
+
+function ipDoRequest (req) {
+  return String(
+    req.headers['cf-connecting-ip'] ||
+    String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+    req.socket.remoteAddress || 'desconhecido',
+  )
+}
+
+app.post('/api/public/video-download', (req, res) => {
+  const url = String((req.body && req.body.url) || '').trim()
+  if (!urlDeVideoValida(url)) {
+    return res.status(400).json({ success: false, code: 'invalid_url', message: 'Cole um link de vídeo do TikTok ou do Instagram.' })
+  }
+
+  const permit = validaPermit(req.headers['x-download-permit'])
+  const chave = permit ? `u:${permit.userId}` : `ip:${ipDoRequest(req)}`
+  const limite = permit ? DL_ASSINANTE_POR_DIA : DL_ANON_POR_DIA
+  const hoje = new Date().toISOString().slice(0, 10)
+
+  // Janela diária em memória (reinicia com o processo — suficiente pro abuso
+  // casual; o pesado é barrado pelo teto + 1 download simultâneo por chave).
+  if (dlJanelas.size > 20000) dlJanelas.clear() // trava de memória
+  let jan = dlJanelas.get(chave)
+  if (!jan || jan.dia !== hoje) { jan = { dia: hoje, count: 0, ativo: false }; dlJanelas.set(chave, jan) }
+  if (jan.ativo) {
+    return res.status(429).json({ success: false, code: 'busy', message: 'Já existe um download em andamento. Aguarde ele terminar.' })
+  }
+  if (jan.count >= limite) {
+    return res.status(429).json({
+      success: false,
+      code: 'rate_limited',
+      message: permit
+        ? 'Limite diário de downloads atingido.'
+        : 'Limite diário gratuito atingido. Assine o Domma pra baixar em lote e sem esse teto.',
+    })
+  }
+  jan.count++
+  jan.ativo = true
+  baixarVideoTo(res, url, { attachment: true, onFim: () => { jan.ativo = false } })
 })
 
 // ---------------------------------------------------------------------------
