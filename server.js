@@ -9,6 +9,7 @@ import swaggerJsdoc from 'swagger-jsdoc'
 import swaggerUi from 'swagger-ui-express'
 import { headersForCountry, parseCountry, countryLowercase, DEFAULT_COUNTRY, COUNTRY_CONFIG } from './lib/countries.js'
 import { runScraperFn, getQueueStats } from './lib/scraper-queue.js'
+import { newHeaderDumpPath, headerDumpArgs, absorbHeaderDump } from './lib/cookie-jar.js'
 
 const app = express()
 app.use(cors())
@@ -492,6 +493,7 @@ function setCookies(cookies) {
 function kaloPost(path, body, country = DEFAULT_COUNTRY, proxyUrl = null) {
   const cookies = getCookies()
   if (!cookies) throw new Error('cookies.txt not found or empty')
+  const hdrFile = newHeaderDumpPath()
 
   const ctx = headersForCountry(country)
 
@@ -516,9 +518,16 @@ function kaloPost(path, body, country = DEFAULT_COUNTRY, proxyUrl = null) {
     `https://www.kalodata.com${path}`,
     '--data-raw', JSON.stringify(body),
     ...proxyCurlArgs(proxyUrl),
+    ...headerDumpArgs(hdrFile),
   ]
 
-  const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  let result
+  try {
+    result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  } finally {
+    // Absorve a renovacao de sessao mesmo quando a chamada falha.
+    absorbHeaderDump(hdrFile)
+  }
   if (proxyUrl) console.log('[proxy] kaloPost', path, 'via', proxyUrl.replace(/:[^:@]*@/, ':***@'))
   if (result.trimStart().startsWith('<')) {
     throw new Error('Cloudflare challenge Ã¢ÂÂ atualize os cookies (precisa do cf_clearance)')
@@ -530,6 +539,7 @@ function kaloPost(path, body, country = DEFAULT_COUNTRY, proxyUrl = null) {
 function kaloGet(path, country = DEFAULT_COUNTRY) {
   const cookies = getCookies()
   if (!cookies) throw new Error('cookies.txt not found or empty')
+  const hdrFile = newHeaderDumpPath()
 
   const ctx = headersForCountry(country)
 
@@ -551,9 +561,15 @@ function kaloGet(path, country = DEFAULT_COUNTRY) {
     '-H', 'sec-fetch-site: same-origin',
     '-H', 'dnt: 1',
     `https://www.kalodata.com${path}`,
+    ...headerDumpArgs(hdrFile),
   ]
 
-  const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  let result
+  try {
+    result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  } finally {
+    absorbHeaderDump(hdrFile)
+  }
   if (result.trimStart().startsWith('<')) {
     throw new Error('Cloudflare challenge Ã¢ÂÂ atualize os cookies (precisa do cf_clearance)')
   }
@@ -595,6 +611,7 @@ function _parseCurlResult (result) {
 async function kaloPostAsync (path, body, country = DEFAULT_COUNTRY, proxyUrl = undefined) {
   const cookies = getCookies()
   if (!cookies) throw new Error('cookies.txt not found or empty')
+  const hdrFile = newHeaderDumpPath()
 
   const proxy = (proxyUrl !== undefined) ? proxyUrl : getNextProxy(country)
   const ctx = headersForCountry(country)
@@ -620,10 +637,16 @@ async function kaloPostAsync (path, body, country = DEFAULT_COUNTRY, proxyUrl = 
     `https://www.kalodata.com${path}`,
     '--data-raw', JSON.stringify(body),
     ...proxyCurlArgs(proxy),
+    ...headerDumpArgs(hdrFile),
   ]
 
   const key = `POST:${path}:${country}:${JSON.stringify(body)}`.substring(0, 256)
-  const result = await runScraperFn(key, () => _execCurl(args))
+  let result
+  try {
+    result = await runScraperFn(key, () => _execCurl(args))
+  } finally {
+    absorbHeaderDump(hdrFile)
+  }
   if (proxy) console.log('[proxy] kaloPostAsync', path, 'via', proxy.replace(/:[^:@]*@/, ':***@'))
   return _parseCurlResult(result)
 }
@@ -631,6 +654,7 @@ async function kaloPostAsync (path, body, country = DEFAULT_COUNTRY, proxyUrl = 
 async function kaloGetAsync (path, country = DEFAULT_COUNTRY) {
   const cookies = getCookies()
   if (!cookies) throw new Error('cookies.txt not found or empty')
+  const hdrFile = newHeaderDumpPath()
 
   const proxy = getNextProxy(country)
   const ctx = headersForCountry(country)
@@ -654,10 +678,16 @@ async function kaloGetAsync (path, country = DEFAULT_COUNTRY) {
     '-H', 'dnt: 1',
     `https://www.kalodata.com${path}`,
     ...proxyCurlArgs(proxy),
+    ...headerDumpArgs(hdrFile),
   ]
 
   const key = `GET:${path}:${country}`
-  const result = await runScraperFn(key, () => _execCurl(args))
+  let result
+  try {
+    result = await runScraperFn(key, () => _execCurl(args))
+  } finally {
+    absorbHeaderDump(hdrFile)
+  }
   return _parseCurlResult(result)
 }
 
@@ -878,6 +908,26 @@ cron.schedule(config.cookie_check_cron, async () => {
     await sendCookieExpiredAlert().catch((e) => console.error('[CRON] Email error:', e.message))
   } else {
     console.log('[CRON] Session OK')
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Cron: keep-alive da sessao
+// ---------------------------------------------------------------------------
+// A sessao do Kalodata morre por INATIVIDADE. Como toda chamada agora absorve o
+// Set-Cookie (lib/cookie-jar.js), basta tocar o upstream de tempos em tempos pra
+// ela se renovar sozinha - sem depender do Chrome do dono com a extensao Cookie
+// Sync aberta, que era o unico caminho ate aqui (PC desligado de madrugada =
+// sessao caida de manha). `/user/features` e a mesma chamada barata que a
+// extensao usa no "ping ativo".
+const KEEPALIVE_CRON = process.env.KALO_KEEPALIVE_CRON || config.session_keepalive_cron || '*/10 * * * *'
+cron.schedule(KEEPALIVE_CRON, () => {
+  if (!getCookies()) return // sem sessao base nao ha o que renovar
+  try {
+    const ok = checkSession() // dispara /user/features -> Set-Cookie -> jar
+    if (!ok) console.warn('[KEEPALIVE] upstream recusou a sessao (precisa de novo login)')
+  } catch (e) {
+    console.warn('[KEEPALIVE] falhou:', e?.message)
   }
 })
 

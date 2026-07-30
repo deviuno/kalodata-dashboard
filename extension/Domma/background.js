@@ -121,14 +121,23 @@ async function syncOnce() {
   }
 }
 
+// Servidor padrão. O IP 187.127.0.217 que ficava aqui é FANTASMA (nunca
+// respondeu em produção): quem instalasse a extensão e não trocasse o campo
+// sincronizava cookies pro vazio, e a sessão caía sem ninguém entender.
+const DEFAULT_SERVER_URL = 'https://kalo-api.domma.ai';
+const LEGACY_SERVER_URLS = ['http://187.127.0.217:3456', 'http://187.127.0.217:5174'];
+
 chrome.runtime.onInstalled.addListener(async () => {
   // Defaults na primeira instalação
   const cfg = await chrome.storage.local.get(['serverUrl', 'adminKey', 'autoSync']);
-  if (cfg.serverUrl === undefined) {
-    await chrome.storage.local.set({ serverUrl: 'http://187.127.0.217:3456' });
+  if (cfg.serverUrl === undefined || LEGACY_SERVER_URLS.includes(cfg.serverUrl)) {
+    // Também MIGRA quem já estava apontando pro IP morto.
+    await chrome.storage.local.set({ serverUrl: DEFAULT_SERVER_URL });
   }
   if (cfg.autoSync === undefined) {
-    await chrome.storage.local.set({ autoSync: false });
+    // Nasce ligado: a extensão só existe pra manter a sessão viva, e o padrão
+    // desligado fazia a renovação depender de alguém lembrar de ativar.
+    await chrome.storage.local.set({ autoSync: true });
   }
   await rescheduleAlarm();
 });
