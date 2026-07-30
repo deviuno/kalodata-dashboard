@@ -2236,7 +2236,15 @@ app.get('/api/creators', async (req, res) => {
     const cateIds = parseCateIds(req)
     const range = getDateRange(days)
 
-    const UPSTREAM_CREATOR_PAGE = 10  // kalodata retorna 10 criadores por página
+    // O upstream ACEITA a página cheia: /creator/queryList com pageSize=60 devolve
+    // os 60 numa única chamada (validado em 2026-07-30 — mesma ordem e mesmos
+    // criadores que as 6 páginas de 10 traziam). Fatiar de 10 em 10 com 1,2s de
+    // espera entre as páginas custava 6 requisições e ~23s de resposta: acima do
+    // teto de 20s do market-proxy e do orçamento do market-sync, que por isso
+    // parou de atualizar criadores e deixou a listagem do app congelada por dias.
+    // Uma chamada resolve, e de quebra reduz a carga na VPS e a exposição a
+    // bloqueio (menos requisições ao upstream, não mais).
+    const UPSTREAM_CREATOR_PAGE = Math.min(Math.max(pageSize, 10), 60)
     const data = await kaloPostPaginated('/creator/queryList', (pageNo) => ({
       country,
       ...range,
@@ -2248,7 +2256,7 @@ app.get('/api/creators', async (req, res) => {
     }), country, {
       targetCount: pageSize,          // acumula até o que o cliente pediu (ex: 60)
       upstreamPageSize: UPSTREAM_CREATOR_PAGE,
-      maxPages: Math.ceil(pageSize / UPSTREAM_CREATOR_PAGE) + 2,  // páginas necessárias + margem
+      maxPages: Math.ceil(pageSize / UPSTREAM_CREATOR_PAGE) + 1,  // páginas necessárias + margem
       baseDelay: 1200,
       needsSort: false,               // upstream já retorna em ordem de revenue
     })
