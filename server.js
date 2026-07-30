@@ -339,6 +339,11 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       '--force-overwrites',
     ]
     if (proxy) args.push('--proxy', proxy)
+    // Impersonation em TODA tentativa (curl_cffi vem embutido no binario
+    // standalone bin/yt-dlp). Sem isso o TikTok responde com challenge cookie e
+    // o extractor morre em 'Unable to extract universal data for rehydration' —
+    // medido em 30/07/2026, mesmo video baixa normal com o handshake de Chrome.
+    args.push('--impersonate', 'chrome')
     execFile(YTDLP_BIN, args, { timeout: 90000 }, cb)
   }
 
@@ -347,6 +352,21 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       // --max-filesize estourado faz o yt-dlp pular o download sem erro e sem arquivo
       return fim(() => res.status(422).json({ success: false, code: 'too_large', message: 'Vídeo acima do limite de 250MB.' }))
     }
+    // Post de FOTOS do TikTok (photo mode): nao existe faixa de video, so a
+    // trilha sonora, e o yt-dlp entrega um mp3 com nome de .mp4. Entregar isso
+    // ao usuario e o mesmo que entregar arquivo quebrado, entao recusamos com
+    // motivo proprio em vez de deixar ele descobrir no player.
+    execFile('ffprobe', ['-v', 'error', '-select_streams', 'v', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', out], { timeout: 15000 }, (errProbe, soProbe) => {
+      if (!errProbe && !String(soProbe || '').trim()) {
+        cleanup()
+        console.warn('[video-download] arquivo sem faixa de video (photo mode)')
+        return fim(() => res.status(422).json({ success: false, code: 'photo_mode', message: 'Esse link é um carrossel de fotos, não tem vídeo para baixar.' }))
+      }
+      enviaArquivo()
+    })
+  }
+
+  const enviaArquivo = () => {
     const size = statSync(out).size
     res.setHeader('Content-Type', 'video/mp4')
     res.setHeader('Content-Length', String(size))
@@ -359,40 +379,46 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
     stream.on('error', () => { cleanup(); onFim(); try { res.destroy() } catch { /* já fechado */ } })
   }
 
-  // 1ª tentativa direto (IP da VPS); se a plataforma barrar (datacenter),
-  // repete com o proxy residencial geo BR — mesmo esquema do scraper.
+  // Cadeia de tentativas: DIRETO -> DIRETO -> PROXY.
+  //
+  // Medido em 30/07/2026 (3 chamadas identicas ao mesmo video): 2 passaram e 1
+  // morreu em "Unable to extract universal data for rehydration". O challenge do
+  // TikTok e intermitente, entao repetir a MESMA requisicao direta e o retry com
+  // melhor retorno. O proxy residencial ficou por ultimo porque estava
+  // respondendo "CONNECT tunnel failed, response 504": com ele em 2o lugar,
+  // qualquer tropeco na 1a tentativa virava erro final pro usuario.
+  const encerra = (code, stderr) => {
+    cleanup()
+    return fim(() => res.status(422).json({ success: false, code, message: String(stderr || '').slice(0, 300) }))
+  }
+  // Erros que nao adianta repetir: o video nao existe, e grande demais ou o
+  // binario sumiu. Repetir so faria o usuario esperar 3x pelo mesmo nao.
+  const definitivo = (code) => code === 'ytdlp_missing' || code === 'not_found' || code === 'too_large'
+
   roda(null, (err, _stdout, stderr) => {
     if (!err) return responde()
     const code1 = classify(err, stderr)
-    if (code1 === 'ytdlp_missing' || code1 === 'not_found' || code1 === 'too_large') {
-      cleanup()
-      return fim(() => res.status(422).json({ success: false, code: code1, message: String(stderr || '').slice(0, 300) }))
-    }
-    const proxy = getNextProxy('br')
-    if (!proxy) {
-      cleanup()
-      console.warn('[video-download] falha sem proxy disponível', code1, String(stderr || '').slice(0, 200))
-      return fim(() => res.status(422).json({ success: false, code: code1, message: String(stderr || '').slice(0, 300) }))
-    }
-    console.warn('[video-download] direto falhou (' + code1 + '), tentando via proxy')
-    roda(proxy, (err2, _stdout2, stderr2) => {
+    if (definitivo(code1)) return encerra(code1, stderr)
+    console.warn('[video-download] 1a tentativa falhou (' + code1 + '), repetindo direto', String(stderr || '').slice(0, 300))
+
+    roda(null, (err2, _stdout2, stderr2) => {
       if (!err2) return responde()
       const code2 = classify(err2, stderr2)
-      // 3ª tentativa com IP NOVO do proxy rotativo — o TikTok às vezes barra um
-      // IP específico da vez (422 transitório visto em produção 26/07).
-      if (code2 === 'download_failed' || code2 === 'timeout') {
-        console.warn('[video-download] proxy falhou (' + code2 + '), última tentativa com IP novo')
-        return roda(getNextProxy('br'), (err3, _stdout3, stderr3) => {
-          if (!err3) return responde()
-          cleanup()
-          const code3 = classify(err3, stderr3)
-          console.warn('[video-download] falha nas 3 tentativas', code3, String(stderr3 || '').slice(0, 300))
-          return fim(() => res.status(422).json({ success: false, code: code3, message: String(stderr3 || '').slice(0, 300) }))
-        })
+      if (definitivo(code2)) return encerra(code2, stderr2)
+
+      const proxy = getNextProxy('br')
+      if (!proxy) {
+        console.warn('[video-download] 2 tentativas diretas falharam e nao ha proxy', code2)
+        return encerra(code2, stderr2)
       }
-      cleanup()
-      console.warn('[video-download] falha também via proxy', code2, String(stderr2 || '').slice(0, 300))
-      return fim(() => res.status(422).json({ success: false, code: code2, message: String(stderr2 || '').slice(0, 300) }))
+      console.warn('[video-download] 2a tentativa falhou (' + code2 + '), ultima via proxy residencial')
+
+      roda(proxy, (err3, _stdout3, stderr3) => {
+        if (!err3) return responde()
+        const code3 = classify(err3, stderr3)
+        console.warn('[video-download] falha nas 3 tentativas', code3, String(stderr3 || '').slice(0, 300))
+        return encerra(code3, stderr3)
+      })
     })
   })
 }
