@@ -855,11 +855,24 @@ function getDateRange(days) {
     const dd = String(d.getDate()).padStart(2, '0')
     return `${y}-${m}-${dd}`
   }
+  // 2026-08-01: a janela voltou pra D-1. Medido contra a UI logada no mesmo dia:
+  // ela manda 02/07~31/07 pra "Ultimos 30 dias" e 25/07~31/07 pra "Ultimos 7 dias",
+  // ou seja termina em ONTEM, nao em anteontem. O comentario acima descreve o que
+  // valia em 14/05; a fonte mudou. Com D-2 o /creator/detail/video/queryList passou
+  // a devolver um conjunto degradado (todos revenue "R$0,00") pra parte dos
+  // criadores, e o /total ficava ~0,8% abaixo do que a fonte mostra
+  // (saratikshop 30d: D-2 R$52,42 mil, D-1 R$52,85 mil, UI R$52,85 mil).
   const end = new Date()
-  end.setDate(end.getDate() - 2)
+  end.setDate(end.getDate() - 1)
   const start = new Date(end)
   start.setDate(start.getDate() - (days - 1))
-  return { days, startDate: fmt(start), endDate: fmt(end) }
+  // NAO devolver `days` aqui. Os 21 handlers fazem `...range` direto no body do
+  // upstream, e um campo `days` sobrando faz o /creator/detail/video/queryList
+  // trocar a resposta por um conjunto degradado: os videos organicos, todos com
+  // revenue "R$0,00". Medido em 01/08/2026, mesmo payload, unica diferenca:
+  //   sem days -> 10 itens, topo R$14,14 mil   |   com days:30 -> 10 itens, todos R$0,00
+  // Nenhum handler le range.days (conferido com grep), entao sai sem quebrar nada.
+  return { startDate: fmt(start), endDate: fmt(end) }
 }
 
 // ---------------------------------------------------------------------------
@@ -1577,19 +1590,40 @@ app.get('/api/creator/:id/videos', async (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const range = getDateRange(days)
 
+    // pageSize AQUI e sempre 10, nao o que o cliente pediu. Medido em 01/08/2026
+    // contra dois criadores: com qualquer outro valor (5, 11, 12, 15, 20, 30, 50) o
+    // upstream troca a resposta por um conjunto degradado, com os videos organicos e
+    // revenue "R$0,00" em todos. Com 10 ele devolve os 10 primeiros por receita, com
+    // sale/revenue/views fieis. Paginar tambem nao rende: pageNo 2 volta vazio ou com
+    // o mesmo lixo, entao 10 e o teto real do endpoint. Mesmo padrao do page_size=10
+    // que ja conheciamos da EchoTik nas sublistas.
+    const UPSTREAM_PAGE_SIZE = 10
     const data = await kaloPostAsync('/creator/detail/video/queryList', {
       id,
       ...range,
       authority: true,
       pageNo: page,
-      pageSize,
+      pageSize: UPSTREAM_PAGE_SIZE,
       sort: [{ field: sortField, type: 'DESC' }],
     }, country)
 
     const items = Array.isArray(data?.data) ? data.data
                 : Array.isArray(data?.list) ? data.list
                 : Array.isArray(data?.items) ? data.items : []
-    res.json({ success: true, data: items, total: items.length })
+
+    // `total` vinha como items.length, o que fazia o consumidor achar que o criador
+    // so tem 10 videos. O count real e outro endpoint (saratikshop: 1139).
+    let total = items.length
+    try {
+      const c = await kaloPostAsync('/creator/detail/video/count', {
+        id, ...range, authority: true, pageNo: 1, pageSize: UPSTREAM_PAGE_SIZE,
+        sort: [{ field: sortField, type: 'DESC' }],
+        cateIds: [], sellerId: '', videoType: '',
+      }, country)
+      if (typeof c?.data === 'number' && c.data > 0) total = c.data
+    } catch { /* count e best-effort: sem ele fica o tamanho da pagina */ }
+
+    res.json({ success: true, data: items, total, pageSize: UPSTREAM_PAGE_SIZE, capped: pageSize > UPSTREAM_PAGE_SIZE })
   } catch (e) {
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
@@ -2574,6 +2608,60 @@ app.get('/api/search/videos', (req, res) => {
  *       500:
  *         description: Erro interno
  */
+// Lojas com que o criador de fato trabalha, direto da fonte.
+// Antes esse path nao existia (404) e o market-proxy DERIVAVA a lista a partir dos
+// produtos, agrupando por seller_id. A derivacao erra: pra saratikshop em 30d ela
+// dava "Mawwal Arabia BR R$9,97k / 255 vendas" enquanto a fonte diz
+// "R$16,11 mil / 98 vendas". Aqui vem atribuido de verdade, com video_revenue e
+// live_revenue separados. pageSize 10 pelo mesmo motivo dos videos.
+app.get('/api/creator/:id/shops', async (req, res) => {
+  try {
+    const country = parseCountry(req)
+    const { id } = req.params
+    const days = parseInt(req.query.days) || 7
+    const page = parseInt(req.query.page) || 1
+    const sortField = req.query.sortField || 'revenue'
+    const range = getDateRange(days)
+
+    const data = await kaloPostAsync('/creator/detail/searchCooperativeShops', {
+      id,
+      ...range,
+      authority: true,
+      pageNo: page,
+      pageSize: 10,
+      sort: [{ field: sortField, type: 'DESC' }],
+      cateIds: [],
+      sellerId: '',
+    }, country)
+
+    const items = Array.isArray(data?.data) ? data.data
+                : Array.isArray(data?.list) ? data.list
+                : Array.isArray(data?.items) ? data.items : []
+
+    // Normaliza pro shape que o market-proxy ja consome nas lojas derivadas
+    // (id/name/revenue/products/sale), mantendo os extras da fonte.
+    const shops = items.map((it) => ({
+      id: String(it.seller_id ?? ''),
+      seller_id: String(it.seller_id ?? ''),
+      name: it.shop_name ?? '',
+      shop_name: it.shop_name ?? '',
+      revenue: it.revenue ?? null,
+      sale: it.sale ?? null,
+      products: it.product_count ?? null,
+      product_count: it.product_count ?? null,
+      seller_type: it.seller_type ?? null,
+      video_revenue: it.video_revenue ?? null,
+      live_revenue: it.live_revenue ?? null,
+    })).filter((x) => x.id)
+
+    res.json({ success: true, data: shops, total: shops.length })
+  } catch (e) {
+    if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
+    if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
 app.get('/api/creator/:id/products', async (req, res) => {
   try {
     const country = parseCountry(req)
