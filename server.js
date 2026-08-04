@@ -1166,6 +1166,13 @@ app.get('/api/products', async (req, res) => {
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
     }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) })
+
+    // Coluna "Vídeos que vendem": os 3 vídeos de maior receita de cada produto,
+    // numa chamada de lote (/product/enrich) em vez de uma por produto.
+    if (data && Array.isArray(data.data) && data.data.length > 0) {
+      await enrichProductVideos(data.data, country, range)
+    }
+
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -1577,6 +1584,13 @@ app.get('/api/lives', async (req, res) => {
     })
     if (data && Array.isArray(data.data)) data.data = data.data.slice(0, pageSize)
     else if (data && Array.isArray(data.list)) data.list = data.list.slice(0, pageSize)
+
+    // Coluna "Produtos mais vendidos" da live: até 3 produtos por transmissão,
+    // numa chamada de lote (/livestream/enrich). O corte acima já rodou, então
+    // só enriquecemos o que de fato vai na resposta.
+    const rows = (data && (Array.isArray(data.data) ? data.data : Array.isArray(data.list) ? data.list : null)) || null
+    if (rows && rows.length > 0) await enrichLiveProducts(rows, country, range)
+
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -3287,42 +3301,54 @@ function insightCacheSet(key, data, ttl) {
 // Produtos atribuídos por vídeo (coluna Produto da listagem). Populado pelo
 // /api/videos a partir do endpoint de LOTE /video/enrich. Consts/fns ficam
 // disponíveis em request-time (módulo já carregado), igual ao insightCache.
-const videoProductsCache = new Map() // videoId -> { products:[{id,title}], expiresAt }
+const videoProductsCache = new Map() // `${escopo}:${id}` -> { value, expiresAt }
 
-function vpCacheGet (videoId) {
-  const e = videoProductsCache.get(videoId)
+function vpCacheGet (key) {
+  const e = videoProductsCache.get(key)
   if (!e) return null
-  if (Date.now() >= e.expiresAt) { videoProductsCache.delete(videoId); return null }
-  return e.products
+  if (Date.now() >= e.expiresAt) { videoProductsCache.delete(key); return null }
+  return e.value
 }
-function vpCacheSet (videoId, products) {
+function vpCacheSet (key, value) {
   const TTL = 12 * 60 * 60 * 1000 // 12h
-  videoProductsCache.set(videoId, { products, expiresAt: Date.now() + TTL })
+  videoProductsCache.set(key, { value, expiresAt: Date.now() + TTL })
 }
 
-// Lote máximo por chamada ao /video/enrich. A listagem da Kalodata manda 10
-// (tamanho da página dela); 20 responde igual de rápido. Acima disso não foi
-// medido — dividimos em pedaços pra não descobrir o teto em produção.
+// Lote máximo por chamada de enrich. A listagem da Kalodata manda 10 (tamanho
+// da página dela); 20 responde igual de rápido. Acima disso não foi medido —
+// dividimos em pedaços pra não descobrir o teto em produção.
 const VP_CHUNK = 20
 // Teto de espera do enrichment DENTRO da request. O lote mede ~0,4s, mas a fila
-// do scraper pode estar ocupada; passando disso devolvemos a listagem sem
-// produto (o fetch segue e popula o cache pra próxima).
+// do scraper pode estar ocupada; passando disso devolvemos a listagem sem o
+// campo enriquecido (o fetch segue e popula o cache pra próxima).
 const VP_WAIT_MS = 8000
 
 /**
- * Preenche `products: [{id, title}]` em cada item da listagem de vídeos.
- * Cache-first por videoId (12h); o que faltar vai numa (ou poucas) chamada(s)
- * de lote ao /video/enrich. Nunca lança: falha de enrichment deixa a listagem
- * sair sem a coluna Produto, que é o comportamento antigo.
+ * Motor dos três enriquecimentos de listagem, todos com a mesma forma: o
+ * upstream tem um endpoint de LOTE que recebe os ids da página e devolve o
+ * vínculo cruzado de cada item.
+ *
+ *   /video/enrich      → produto de cada vídeo   (coluna Produto em vídeos)
+ *   /livestream/enrich → produtos de cada live   (coluna Produtos em lives)
+ *   /product/enrich    → vídeos de cada produto  (coluna Vídeos em produtos)
+ *
+ * Cache-first por id (12h, namespaced por escopo). Nunca lança: falha de
+ * enrichment deixa a listagem sair sem o campo, que é o comportamento antigo.
+ *
+ * @param {object[]} items    itens da listagem (mutados no lugar)
+ * @param {string}   field    nome do campo a preencher em cada item
+ * @param {string}   scope    prefixo da chave de cache
+ * @param {string}   path     endpoint de lote no upstream
+ * @param {Function} mapRow   (row) => [linhaId, valor] extraído da resposta
  */
-async function enrichVideoProducts (items, country, range) {
+async function enrichListing (items, { field, scope, path, mapRow }, country, range) {
   const missing = []
-  for (const v of items) {
-    const id = v.id ? String(v.id) : ''
-    v.products = []
+  for (const it of items) {
+    const id = it.id ? String(it.id) : ''
+    it[field] = []
     if (!id) continue
-    const cached = vpCacheGet(id)
-    if (cached !== null) v.products = cached
+    const cached = vpCacheGet(`${scope}:${id}`)
+    if (cached !== null) it[field] = cached
     else missing.push(id)
   }
   if (!missing.length) return
@@ -3333,26 +3359,23 @@ async function enrichVideoProducts (items, country, range) {
   const job = (async () => {
     for (const ids of chunks) {
       try {
-        const resp = await kaloPostAsync('/video/enrich', {
-          ids, country, ...range, cateIds: [],
-        }, country)
+        const resp = await kaloPostAsync(path, { ids, country, ...range, cateIds: [] }, country)
         const rows = Array.isArray(resp?.data) ? resp.data : []
-        const byVideo = new Map()
+        const byId = new Map()
         for (const r of rows) {
-          const vid = String(r?.id ?? '')
-          const pid = String(r?.product_id ?? r?.productId ?? '')
-          if (!vid || !pid) continue
-          const list = byVideo.get(vid) || []
-          list.push({ id: pid, title: String(r?.product_title ?? r?.title ?? '') || null })
-          byVideo.set(vid, list)
+          const pair = mapRow(r)
+          if (!pair) continue
+          const [rowId, value] = pair
+          if (!rowId || !value || !value.length) continue
+          byId.set(rowId, [...(byId.get(rowId) || []), ...value])
         }
-        // Cacheia TODO id pedido — inclusive os que voltaram sem produto, senão
-        // vídeo sem atribuição seria re-perguntado a cada request.
-        for (const vid of ids) vpCacheSet(vid, byVideo.get(vid) || [])
+        // Cacheia TODO id pedido — inclusive os que voltaram vazios, senão item
+        // sem vínculo seria re-perguntado a cada request.
+        for (const id of ids) vpCacheSet(`${scope}:${id}`, byId.get(id) || [])
       } catch (e) {
         // Sem negative cache aqui: erro é da chamada, não do dado. Cachear []
-        // esconderia o produto por 12h por causa de um timeout.
-        console.warn(`[video-enrich] ${ids.length} ids: ${e.message}`)
+        // esconderia o vínculo por 12h por causa de um timeout.
+        console.warn(`[enrich ${scope}] ${ids.length} ids: ${e.message}`)
       }
     }
   })()
@@ -3363,12 +3386,59 @@ async function enrichVideoProducts (items, country, range) {
   })])
 
   // Reaplica o que chegou a tempo (o resto fica pra próxima request, já cacheado).
-  for (const v of items) {
-    const id = v.id ? String(v.id) : ''
-    if (!id || (v.products && v.products.length)) continue
-    const cached = vpCacheGet(id)
-    if (cached) v.products = cached
+  for (const it of items) {
+    const id = it.id ? String(it.id) : ''
+    if (!id || (it[field] && it[field].length)) continue
+    const cached = vpCacheGet(`${scope}:${id}`)
+    if (cached) it[field] = cached
   }
+}
+
+/** Vídeo → produto que ele vende. `title` vem null (o enrich só dá o id). */
+function enrichVideoProducts (items, country, range) {
+  return enrichListing(items, {
+    field: 'products',
+    scope: 'vp',
+    path: '/video/enrich',
+    mapRow: (r) => {
+      const vid = String(r?.id ?? '')
+      const pid = String(r?.product_id ?? r?.productId ?? '')
+      if (!vid || !pid) return null
+      return [vid, [{ id: pid, title: String(r?.product_title ?? r?.title ?? '') || null }]]
+    },
+  }, country, range)
+}
+
+/** Live → produtos mais vendidos nela (o upstream devolve os 3 principais). */
+function enrichLiveProducts (items, country, range) {
+  return enrichListing(items, {
+    field: 'products',
+    scope: 'lp',
+    path: '/livestream/enrich',
+    mapRow: (r) => {
+      const lid = String(r?.id ?? '')
+      const ids = Array.isArray(r?.product_ids) ? r.product_ids : []
+      if (!lid) return null
+      return [lid, ids.map(p => ({ id: String(p), title: null })).filter(p => p.id)]
+    },
+  }, country, range)
+}
+
+/** Produto → vídeos de maior receita que o vendem (o upstream devolve 3). */
+function enrichProductVideos (items, country, range) {
+  return enrichListing(items, {
+    field: 'videos',
+    scope: 'pv',
+    path: '/product/enrich',
+    mapRow: (r) => {
+      const pid = String(r?.id ?? '')
+      const vids = Array.isArray(r?.videos) ? r.videos : []
+      if (!pid) return null
+      return [pid, vids
+        .map(v => ({ id: String(v?.id ?? ''), content_type: v?.contentType ?? v?.content_type ?? null }))
+        .filter(v => v.id)]
+    },
+  }, country, range)
 }
 
 app.get('/api/insight/:videoId/url', (req, res) => {
