@@ -1332,6 +1332,84 @@ app.get('/api/video/:id/total', (req, res) => {
   }
 })
 
+/**
+ * @swagger
+ * /api/video/{id}/products:
+ *   get:
+ *     summary: Produtos vendidos por um video (com share de receita)
+ *     tags: [Videos]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 30, enum: [7, 30] }
+ *       - in: query
+ *         name: country
+ *         schema: { type: string, default: BR }
+ *     responses:
+ *       200:
+ *         description: Lista de produtos (id, product_title, revenue, sale, percentage, min/max_price, categorias)
+ *       500:
+ *         description: Erro interno
+ */
+app.get('/api/video/:id/products', async (req, res) => {
+  const { id } = req.params
+  if (!/^\d+$/.test(id)) return res.status(400).json({ success: false, message: 'Invalid id' })
+  try {
+    const country = parseCountry(req)
+    const days = parseInt(req.query.days) || 30
+    const range = getDateRange(days)
+    const data = await kaloPostAsync('/video/detail/stat/queryProductList', {
+      id, country, ...range, pageNo: 1, pageSize: parseInt(req.query.pageSize) || 10,
+    }, country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+/**
+ * @swagger
+ * /api/video/{id}/similar:
+ *   get:
+ *     summary: Outros videos que vendem o mesmo produto
+ *     tags: [Videos]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 30, enum: [7, 30] }
+ *       - in: query
+ *         name: country
+ *         schema: { type: string, default: BR }
+ *     responses:
+ *       200:
+ *         description: '{ type: "product", revenue: [videos...] } — mesmo shape do upstream'
+ *       500:
+ *         description: Erro interno
+ */
+app.get('/api/video/:id/similar', async (req, res) => {
+  const { id } = req.params
+  if (!/^\d+$/.test(id)) return res.status(400).json({ success: false, message: 'Invalid id' })
+  try {
+    const country = parseCountry(req)
+    const days = parseInt(req.query.days) || 30
+    const range = getDateRange(days)
+    const data = await kaloPostAsync('/video/detail/similar/revenue', {
+      id, country, ...range, pageNo: 1, pageSize: parseInt(req.query.pageSize) || 10,
+    }, country)
+    res.json(data)
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Videos
 // ---------------------------------------------------------------------------
@@ -1392,55 +1470,14 @@ app.get('/api/videos', async (req, res) => {
       sort: [{ field: sortField, type: 'DESC' }],
     }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) })
 
-    // Coluna Produto: enriquece com products:[{id,title}] em STALE-WHILE-REVALIDATE.
-    // NUNCA dá await aqui — cache hit entra na resposta; cache miss volta [] e dispara
-    // o fetch em background pra esquentar o cache pras próximas requests. Assim o
-    // /api/videos continua respondendo em <1s. O upstream /video/queryList não traz
-    // produto; a atribuição vem de /video/detail/product/queryList por vídeo.
+    // Coluna Produto: o upstream tem um endpoint de LOTE — POST /video/enrich
+    // ({ids,country,startDate,endDate,cateIds}) devolve [{id, product_id}] pra
+    // página inteira numa chamada só (~0,4s medidos com 20 ids). É o mesmo que a
+    // própria listagem da Kalodata usa pra desenhar a coluna Produto. Substituiu
+    // a tentativa antiga de N+1 via /video/detail/product/queryList (devolvia
+    // vazio e por isso ficou desligada).
     if (data && Array.isArray(data.data) && data.data.length > 0) {
-      const enrichRange = getDateRange(days)
-      // DESLIGADO (0): a atribuição produto-por-vídeo NÃO é exposta pelos endpoints
-      // do scraper Kalodata (/video/detail/product/* devolvem vazio; /video/queryList
-      // não traz produto). Só viria pela Open API oficial. Mantido o código pra
-      // reativar (>0) se um dia houver fonte. Front esconde a coluna quando vazio.
-      const MAX_ENRICH = 0
-      // Teto GLOBAL de fetches de enrichment em voo. Sem isso, sob tráfego
-      // simultâneo cada request enfileira até 12 jobs e a VPS (CPU limitada)
-      // entra em throttle. Com o teto, no máx MAX_BG_ENRICH curls de enrichment
-      // pendentes no total (a fila ainda limita a 2 concorrentes de fato).
-      const MAX_BG_ENRICH = 3
-      data.data.forEach((v, idx) => {
-        if (idx >= MAX_ENRICH) { if (!v.products) v.products = []; return }
-        const videoId = v.id
-        if (!videoId) { v.products = []; return }
-        const cached = vpCacheGet(videoId)
-        if (cached !== null) { v.products = cached; return }
-        v.products = [] // resposta imediata; background popula pra próxima request
-        if (!vpInFlight.has(videoId) && vpInFlight.size < MAX_BG_ENRICH) {
-          vpInFlight.add(videoId)
-          kaloPostAsync('/video/detail/product/queryList', {
-            id: videoId, country, ...enrichRange, days, pageNo: 1, pageSize: 10,
-          }, country)
-            .then(pd => {
-              const items = Array.isArray(pd?.data) ? pd.data
-                          : Array.isArray(pd?.list) ? pd.list
-                          : Array.isArray(pd?.items) ? pd.items : []
-              const products = items.map(p => ({
-                id: String(p.productId || p.product_id || p.id || ''),
-                title: String(p.productTitle || p.product_title || p.title || ''),
-              })).filter(p => p.id)
-              vpCacheSet(videoId, products)
-            })
-            .catch(e => {
-              // Negative cache: cacheia [] também no erro pra NÃO re-disparar a
-              // cada request (era a carga recorrente que estressava a VPS). Cada
-              // vídeo busca no máx 1× por 12h, com ou sem sucesso.
-              console.warn(`[enrich-bg] ${videoId}: ${e.message}`)
-              vpCacheSet(videoId, [])
-            })
-            .finally(() => vpInFlight.delete(videoId))
-        }
-      })
+      await enrichVideoProducts(data.data, country, range)
     }
 
     res.json(data)
@@ -3247,12 +3284,10 @@ function insightCacheSet(key, data, ttl) {
   insightCache.set(key, { data, expiresAt: Date.now() + ttl })
 }
 
-// Produtos atribuídos por vídeo (coluna Produto da listagem). Populado em
-// background pelo /api/videos (stale-while-revalidate). vpInFlight evita
-// disparos duplicados do mesmo videoId. Consts/fns ficam disponíveis em
-// request-time (módulo já carregado), igual ao insightCache.
+// Produtos atribuídos por vídeo (coluna Produto da listagem). Populado pelo
+// /api/videos a partir do endpoint de LOTE /video/enrich. Consts/fns ficam
+// disponíveis em request-time (módulo já carregado), igual ao insightCache.
 const videoProductsCache = new Map() // videoId -> { products:[{id,title}], expiresAt }
-const vpInFlight = new Set()
 
 function vpCacheGet (videoId) {
   const e = videoProductsCache.get(videoId)
@@ -3263,6 +3298,77 @@ function vpCacheGet (videoId) {
 function vpCacheSet (videoId, products) {
   const TTL = 12 * 60 * 60 * 1000 // 12h
   videoProductsCache.set(videoId, { products, expiresAt: Date.now() + TTL })
+}
+
+// Lote máximo por chamada ao /video/enrich. A listagem da Kalodata manda 10
+// (tamanho da página dela); 20 responde igual de rápido. Acima disso não foi
+// medido — dividimos em pedaços pra não descobrir o teto em produção.
+const VP_CHUNK = 20
+// Teto de espera do enrichment DENTRO da request. O lote mede ~0,4s, mas a fila
+// do scraper pode estar ocupada; passando disso devolvemos a listagem sem
+// produto (o fetch segue e popula o cache pra próxima).
+const VP_WAIT_MS = 8000
+
+/**
+ * Preenche `products: [{id, title}]` em cada item da listagem de vídeos.
+ * Cache-first por videoId (12h); o que faltar vai numa (ou poucas) chamada(s)
+ * de lote ao /video/enrich. Nunca lança: falha de enrichment deixa a listagem
+ * sair sem a coluna Produto, que é o comportamento antigo.
+ */
+async function enrichVideoProducts (items, country, range) {
+  const missing = []
+  for (const v of items) {
+    const id = v.id ? String(v.id) : ''
+    v.products = []
+    if (!id) continue
+    const cached = vpCacheGet(id)
+    if (cached !== null) v.products = cached
+    else missing.push(id)
+  }
+  if (!missing.length) return
+
+  const chunks = []
+  for (let i = 0; i < missing.length; i += VP_CHUNK) chunks.push(missing.slice(i, i + VP_CHUNK))
+
+  const job = (async () => {
+    for (const ids of chunks) {
+      try {
+        const resp = await kaloPostAsync('/video/enrich', {
+          ids, country, ...range, cateIds: [],
+        }, country)
+        const rows = Array.isArray(resp?.data) ? resp.data : []
+        const byVideo = new Map()
+        for (const r of rows) {
+          const vid = String(r?.id ?? '')
+          const pid = String(r?.product_id ?? r?.productId ?? '')
+          if (!vid || !pid) continue
+          const list = byVideo.get(vid) || []
+          list.push({ id: pid, title: String(r?.product_title ?? r?.title ?? '') || null })
+          byVideo.set(vid, list)
+        }
+        // Cacheia TODO id pedido — inclusive os que voltaram sem produto, senão
+        // vídeo sem atribuição seria re-perguntado a cada request.
+        for (const vid of ids) vpCacheSet(vid, byVideo.get(vid) || [])
+      } catch (e) {
+        // Sem negative cache aqui: erro é da chamada, não do dado. Cachear []
+        // esconderia o produto por 12h por causa de um timeout.
+        console.warn(`[video-enrich] ${ids.length} ids: ${e.message}`)
+      }
+    }
+  })()
+
+  await Promise.race([job, new Promise(r => {
+    const t = setTimeout(r, VP_WAIT_MS)
+    if (typeof t.unref === 'function') t.unref()
+  })])
+
+  // Reaplica o que chegou a tempo (o resto fica pra próxima request, já cacheado).
+  for (const v of items) {
+    const id = v.id ? String(v.id) : ''
+    if (!id || (v.products && v.products.length)) continue
+    const cached = vpCacheGet(id)
+    if (cached) v.products = cached
+  }
 }
 
 app.get('/api/insight/:videoId/url', (req, res) => {
