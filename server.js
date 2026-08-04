@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import { execFileSync, execFile } from 'child_process'
 import { createHmac } from 'crypto'
-import { readFileSync, writeFileSync, existsSync, statSync, createReadStream, unlinkSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, statSync, createReadStream, unlinkSync, renameSync } from 'fs'
 import { Resend } from 'resend'
 import cron from 'node-cron'
 import swaggerJsdoc from 'swagger-jsdoc'
@@ -320,6 +320,8 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
     return 'download_failed'
   }
 
+  const ehInstagram = INSTAGRAM_URL_RE.test(url)
+
   const roda = (proxy, cb) => {
     const args = [
       url,
@@ -331,7 +333,18 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       // streams de reprodução reais, com áudio e compatíveis com qualquer
       // player/editor. Depois: qualquer muxed com áudio > merge vídeo+áudio
       // via ffmpeg (existe na VPS) > o que der.
-      '-f', 'b[vcodec^=h264][ext=mp4]/b[acodec!=none][ext=mp4]/b[acodec!=none]/bv*+ba/b',
+      //
+      // INSTAGRAM tem outra armadilha: as faixas DASH de maior resolução vêm em
+      // VP9 (vp09.*) e nenhum filtro de codec acima bate nelas, então o antigo
+      // `bv*+ba` mergiava VP9 dentro de .mp4 — o arquivo abre, toca o áudio e
+      // NÃO mostra imagem no Windows/QuickTime/editores (medido 04/08/2026 no
+      // reel DLIX4hkRjh9: saiu vp9 1080p). Os formatos progressivos do IG
+      // ("1", "2", "3", com codec não anunciado) são H.264+AAC muxados, então
+      // pra Instagram eles vêm primeiro; VP9/AV1 só como último recurso, e aí
+      // o transcode em `responde` conserta.
+      '-f', ehInstagram
+        ? 'b[ext=mp4]/b/bv*[vcodec^=avc1]+ba/bv*+ba'
+        : 'b[vcodec^=h264][ext=mp4]/b[acodec!=none][ext=mp4]/b[acodec!=none]/bv*+ba/b',
       '--merge-output-format', 'mp4',
       '--max-filesize', '250M',
       '--no-progress',
@@ -357,11 +370,44 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
     // ao usuario e o mesmo que entregar arquivo quebrado, entao recusamos com
     // motivo proprio em vez de deixar ele descobrir no player.
     execFile('ffprobe', ['-v', 'error', '-select_streams', 'v', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', out], { timeout: 15000 }, (errProbe, soProbe) => {
-      if (!errProbe && !String(soProbe || '').trim()) {
+      const codec = String(soProbe || '').trim().split('\n')[0].trim().toLowerCase()
+      if (!errProbe && !codec) {
         cleanup()
         console.warn('[video-download] arquivo sem faixa de video (photo mode)')
         return fim(() => res.status(422).json({ success: false, code: 'photo_mode', message: 'Esse link é um carrossel de fotos, não tem vídeo para baixar.' }))
       }
+      // Rede de segurança: se mesmo assim veio um codec que os players comuns
+      // não decodificam, recodifica antes de entregar.
+      if (codec && !CODECS_TOCAVEIS.has(codec)) return transcodaParaH264(codec)
+      enviaArquivo()
+    })
+  }
+
+  // H.264 é o único que abre em tudo (Windows, iOS, Android, CapCut, Premiere).
+  // VP9/AV1 dentro de .mp4 é exatamente o caso "abriu, ouço o áudio e a imagem
+  // não aparece"; HEVC no Windows depende de codec pago instalado.
+  const CODECS_TOCAVEIS = new Set(['h264'])
+
+  const transcodaParaH264 = (codec) => {
+    const conv = out.replace(/\.mp4$/, '_h264.mp4')
+    console.warn('[video-download] recodificando ' + codec + ' -> h264')
+    execFile('ffmpeg', [
+      '-y', '-i', out,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-movflags', '+faststart',
+      // A VPS é compartilhada com o worker de render: 2 threads deixam o resto
+      // do servidor respirando.
+      '-threads', '2',
+      conv,
+      // 90s: o front desiste em 150s e o download em si já gastou parte disso.
+    ], { timeout: 90000 }, (errConv) => {
+      if (errConv || !existsSync(conv)) {
+        console.warn('[video-download] recodificacao falhou, entregando original', String((errConv && errConv.message) || '').slice(0, 200))
+        try { unlinkSync(conv) } catch { /* nem chegou a existir */ }
+        return enviaArquivo()
+      }
+      try { renameSync(conv, out) } catch { /* fica com o original */ }
       enviaArquivo()
     })
   }
