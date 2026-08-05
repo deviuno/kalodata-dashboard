@@ -3327,13 +3327,16 @@ function vpCacheSet (key, value) {
 }
 
 // Lote máximo por chamada de enrich. A listagem da Kalodata manda 10 (tamanho
-// da página dela); 20 responde igual de rápido. Acima disso não foi medido —
-// dividimos em pedaços pra não descobrir o teto em produção.
-const VP_CHUNK = 20
-// Teto de espera do enrichment DENTRO da request. O lote mede ~0,4s, mas a fila
-// do scraper pode estar ocupada; passando disso devolvemos a listagem sem o
-// campo enriquecido (o fetch segue e popula o cache pra próxima).
-const VP_WAIT_MS = 8000
+// da página dela), mas o endpoint aceita a página inteira: 60 ids medidos em
+// 0,56s. Com 60, a listagem padrão do Domma (pageSize=60) resolve numa chamada
+// só. Com o lote de 20 anterior eram 3 chamadas SEQUENCIAIS, e sob fila ocupada
+// isso estourava o teto abaixo — o proxy então cacheava por 12h uma resposta
+// com quase nada enriquecido.
+const VP_CHUNK = 60
+// Teto de espera do enrichment DENTRO da request. O lote mede menos de 1s, mas
+// a fila do scraper pode estar ocupada; passando disso devolvemos a listagem
+// sem o campo enriquecido (o fetch segue e popula o cache pra próxima).
+const VP_WAIT_MS = 12000
 
 /**
  * Motor dos três enriquecimentos de listagem, todos com a mesma forma: o
@@ -3368,29 +3371,29 @@ async function enrichListing (items, { field, scope, path, mapRow }, country, ra
   const chunks = []
   for (let i = 0; i < missing.length; i += VP_CHUNK) chunks.push(missing.slice(i, i + VP_CHUNK))
 
-  const job = (async () => {
-    for (const ids of chunks) {
-      try {
-        const resp = await kaloPostAsync(path, { ids, country, ...range, cateIds: [] }, country)
-        const rows = Array.isArray(resp?.data) ? resp.data : []
-        const byId = new Map()
-        for (const r of rows) {
-          const pair = mapRow(r)
-          if (!pair) continue
-          const [rowId, value] = pair
-          if (!rowId || !value || !value.length) continue
-          byId.set(rowId, [...(byId.get(rowId) || []), ...value])
-        }
-        // Cacheia TODO id pedido — inclusive os que voltaram vazios, senão item
-        // sem vínculo seria re-perguntado a cada request.
-        for (const id of ids) vpCacheSet(`${scope}:${id}`, byId.get(id) || [])
-      } catch (e) {
-        // Sem negative cache aqui: erro é da chamada, não do dado. Cachear []
-        // esconderia o vínculo por 12h por causa de um timeout.
-        console.warn(`[enrich ${scope}] ${ids.length} ids: ${e.message}`)
+  // Pedaços em PARALELO (a fila do scraper já limita a concorrência real): com
+  // chunks sequenciais, uma página grande somava as latências e passava do teto.
+  const job = Promise.all(chunks.map(async (ids) => {
+    try {
+      const resp = await kaloPostAsync(path, { ids, country, ...range, cateIds: [] }, country)
+      const rows = Array.isArray(resp?.data) ? resp.data : []
+      const byId = new Map()
+      for (const r of rows) {
+        const pair = mapRow(r)
+        if (!pair) continue
+        const [rowId, value] = pair
+        if (!rowId || !value || !value.length) continue
+        byId.set(rowId, [...(byId.get(rowId) || []), ...value])
       }
+      // Cacheia TODO id pedido — inclusive os que voltaram vazios, senão item
+      // sem vínculo seria re-perguntado a cada request.
+      for (const id of ids) vpCacheSet(`${scope}:${id}`, byId.get(id) || [])
+    } catch (e) {
+      // Sem negative cache aqui: erro é da chamada, não do dado. Cachear []
+      // esconderia o vínculo por 12h por causa de um timeout.
+      console.warn(`[enrich ${scope}] ${ids.length} ids: ${e.message}`)
     }
-  })()
+  }))
 
   await Promise.race([job, new Promise(r => {
     const t = setTimeout(r, VP_WAIT_MS)
