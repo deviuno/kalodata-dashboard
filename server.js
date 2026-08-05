@@ -4336,15 +4336,26 @@ function fetchEngagement (id, handle, cb) {
     execFile(YTDLP_BIN, a, { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }, next)
   }
 
-  // Uma tentativa direta e uma pelo proxy residencial. O baixador usa duas
-  // diretas antes do proxy porque lá o custo de errar é o cliente sem arquivo;
-  // aqui é uma coluna vazia, e segurar a fila não compensa.
+  // DIRETO -> DIRETO -> PROXY, a mesma cadeia do baixador, e pelo mesmo motivo
+  // medido em 05/08/2026: o challenge do TikTok ("Unable to extract universal
+  // data for rehydration") é INTERMITENTE no IP da VPS, então a segunda direta
+  // costuma passar; já o proxy residencial responde 403 Forbidden neste
+  // momento. Gastar a única tentativa direta e cair no proxy era trocar o
+  // caminho que funciona pelo que não funciona.
   roda(null, (err, stdout) => {
     const ok = !err && parse(stdout)
     if (ok) return cb(ok)
-    const proxy = getNextProxy('br')
-    if (!proxy) return cb(null)
-    roda(proxy, (err2, stdout2) => cb(!err2 ? parse(stdout2) : null))
+    // Respiro curto: o challenge vem em rajada, e reemendar no mesmo instante
+    // costuma colher a mesma negativa.
+    setTimeout(() => {
+      roda(null, (err2, stdout2) => {
+        const ok2 = !err2 && parse(stdout2)
+        if (ok2) return cb(ok2)
+        const proxy = getNextProxy('br')
+        if (!proxy) return cb(null)
+        roda(proxy, (err3, stdout3) => cb(!err3 ? parse(stdout3) : null))
+      })
+    }, 800)
   })
 }
 
