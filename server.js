@@ -1773,6 +1773,12 @@ app.get('/api/shops', async (req, res) => {
       cateIds,
       sort: [{ field: sortField, type: 'DESC' }],
     }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) })
+
+    // Coluna "Produtos mais vendidos" da loja: 3 por linha, em lote.
+    if (data && Array.isArray(data.data) && data.data.length > 0) {
+      await enrichShopProducts(data.data, country, range)
+    }
+
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -2420,6 +2426,12 @@ app.get('/api/creators', async (req, res) => {
     // Corta ao pageSize pedido pelo cliente
     if (data && Array.isArray(data.data)) data.data = data.data.slice(0, pageSize)
     else if (data && Array.isArray(data.list)) data.list = data.list.slice(0, pageSize)
+
+    // Coluna "Produtos mais vendidos" do criador: 3 por linha, em lote (o corte
+    // acima já rodou, então só enriquecemos o que vai na resposta).
+    const rows = (data && (Array.isArray(data.data) ? data.data : Array.isArray(data.list) ? data.list : null)) || null
+    if (rows && rows.length > 0) await enrichCreatorProducts(rows, country, range)
+
     res.json(data)
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
@@ -3409,18 +3421,33 @@ function enrichVideoProducts (items, country, range) {
   }, country, range)
 }
 
+// Live, criador e loja compartilham a MESMA resposta de enrich
+// (`{id, product_ids:[3]}`) — muda só o path e o namespace de cache.
+function productIdsRow (r) {
+  const id = String(r?.id ?? '')
+  const ids = Array.isArray(r?.product_ids) ? r.product_ids : []
+  if (!id) return null
+  return [id, ids.map(p => ({ id: String(p), title: null })).filter(p => p.id)]
+}
+
 /** Live → produtos mais vendidos nela (o upstream devolve os 3 principais). */
 function enrichLiveProducts (items, country, range) {
   return enrichListing(items, {
-    field: 'products',
-    scope: 'lp',
-    path: '/livestream/enrich',
-    mapRow: (r) => {
-      const lid = String(r?.id ?? '')
-      const ids = Array.isArray(r?.product_ids) ? r.product_ids : []
-      if (!lid) return null
-      return [lid, ids.map(p => ({ id: String(p), title: null })).filter(p => p.id)]
-    },
+    field: 'products', scope: 'lp', path: '/livestream/enrich', mapRow: productIdsRow,
+  }, country, range)
+}
+
+/** Criador → produtos mais vendidos por ele. */
+function enrichCreatorProducts (items, country, range) {
+  return enrichListing(items, {
+    field: 'products', scope: 'cp', path: '/creator/enrich', mapRow: productIdsRow,
+  }, country, range)
+}
+
+/** Loja → produtos mais vendidos dela. */
+function enrichShopProducts (items, country, range) {
+  return enrichListing(items, {
+    field: 'products', scope: 'sp', path: '/shop/enrich', mapRow: productIdsRow,
   }, country, range)
 }
 
