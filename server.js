@@ -4230,6 +4230,210 @@ app.use('/api/kalo', (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
+// Engajamento de vídeo (curtidas, comentários, compartilhamentos)
+// ---------------------------------------------------------------------------
+// POR QUE ISTO EXISTE: a listagem de vídeos do Domma tem três colunas que nunca
+// preenchem, porque o upstream Kalodata NÃO devolve engajamento em /api/videos
+// (só views, receita, vendas e ads). O EchoTik tem o dado, mas a API dele só
+// expõe ranklists, sem consulta por id, e apenas 24% dos ids do kalo têm par lá.
+//
+// A fonte que responde por qualquer id é o próprio TikTok, e nós já falamos com
+// ele: o mesmo yt-dlp do baixador devolve like_count/comment_count/repost_count
+// com --skip-download, sem trazer um byte de vídeo (medido: ~6s por item).
+//
+// ATENÇÃO À NATUREZA DO NÚMERO: aqui vem o TOTAL ACUMULADO do vídeo, não o do
+// período da listagem. No mesmo vídeo, o kalo mostrava 1,36M de views nos 7
+// dias e o TikTok 1,8M desde sempre. Quem exibe precisa rotular como total,
+// senão o cliente compara com as colunas vizinhas (que são do período) e tira
+// conclusão errada.
+const engagementCache = new Map()
+
+/** 12h para acerto (engajamento não muda de hora em hora), 30min para falha. */
+const ENG_TTL_OK_MS = 12 * 60 * 60 * 1000
+const ENG_TTL_FAIL_MS = 30 * 60 * 1000
+
+/** Teto por chamada. A listagem do Domma pede 60; acima disso o tempo estoura. */
+const ENG_MAX_ITEMS = 60
+
+/**
+ * Quantos yt-dlp rodam ao mesmo tempo.
+ *
+ * A VPS é COMPARTILHADA com o scraper de mercado e com o worker de render de
+ * vídeo (ffmpeg). Subir isto satura a CPU e derruba o resto: já aconteceu de o
+ * ffmpeg preso deixar até o SSH sem resposta. Quatro processos leves de rede,
+ * sem transcodificação, é o que cabe sem competir com eles.
+ */
+const ENG_CONCURRENCY = 4
+
+/**
+ * Teto de espera DENTRO da request. Passando disso devolvemos o que já ficou
+ * pronto e o resto continua em background populando o cache para a próxima
+ * chamada. Mesmo desenho do VP_WAIT_MS do enrichment de listagem: a tela nunca
+ * fica esperando, ela completa depois.
+ */
+const ENG_WAIT_MS = 25000
+
+function engCacheGet (id) {
+  const e = engagementCache.get(id)
+  if (!e) return null
+  if (Date.now() >= e.expiresAt) { engagementCache.delete(id); return null }
+  return e.value
+}
+
+function engCacheSet (id, value, ok) {
+  engagementCache.set(id, {
+    value,
+    expiresAt: Date.now() + (ok ? ENG_TTL_OK_MS : ENG_TTL_FAIL_MS),
+  })
+}
+
+/** URL canônica do vídeo. Sem handle o TikTok aceita o placeholder. */
+function tiktokVideoUrl (id, handle) {
+  const user = String(handle || '').replace(/^@+/, '').trim() || 'tiktok'
+  return `https://www.tiktok.com/@${user}/video/${id}`
+}
+
+/**
+ * Lê o engajamento de UM vídeo. Nunca lança: devolve null quando não deu, e o
+ * chamador cacheia isso por pouco tempo para não martelar o TikTok.
+ *
+ * `--skip-download --dump-json` traz o metadado inteiro sem baixar mídia. O
+ * `--impersonate chrome` é obrigatório pelo mesmo motivo do baixador: sem o
+ * handshake de navegador o TikTok responde com challenge e o extractor morre.
+ */
+function fetchEngagement (id, handle, cb) {
+  const url = tiktokVideoUrl(id, handle)
+  const args = [
+    url,
+    '--skip-download',
+    '--dump-json',
+    '--no-playlist',
+    '--no-warnings',
+    '--socket-timeout', '15',
+    '--impersonate', 'chrome',
+  ]
+
+  const parse = (stdout) => {
+    try {
+      const j = JSON.parse(String(stdout).trim().split('\n')[0])
+      const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null)
+      const out = {
+        likes: n(j.like_count),
+        comments: n(j.comment_count),
+        shares: n(j.repost_count),
+        views: n(j.view_count),
+      }
+      // Sem nenhum dos quatro não é resposta útil: trata como falha para não
+      // cachear zero por 12h e mostrar "0 curtidas" num vídeo com milhares.
+      return Object.values(out).some((v) => v != null) ? out : null
+    } catch {
+      return null
+    }
+  }
+
+  const roda = (proxy, next) => {
+    const a = proxy ? [...args, '--proxy', proxy] : args
+    execFile(YTDLP_BIN, a, { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }, next)
+  }
+
+  // Uma tentativa direta e uma pelo proxy residencial. O baixador usa duas
+  // diretas antes do proxy porque lá o custo de errar é o cliente sem arquivo;
+  // aqui é uma coluna vazia, e segurar a fila não compensa.
+  roda(null, (err, stdout) => {
+    const ok = !err && parse(stdout)
+    if (ok) return cb(ok)
+    const proxy = getNextProxy('br')
+    if (!proxy) return cb(null)
+    roda(proxy, (err2, stdout2) => cb(!err2 ? parse(stdout2) : null))
+  })
+}
+
+/**
+ * @swagger
+ * /api/videos/engagement:
+ *   post:
+ *     summary: Curtidas, comentarios e compartilhamentos de uma lista de videos
+ *     description: >
+ *       Numeros TOTAIS do video (acumulados desde a publicacao), lidos do
+ *       TikTok. Nao sao do periodo da listagem. Cache de 12h por id.
+ *     tags: [Videos]
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               items:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     id: { type: string }
+ *                     handle: { type: string }
+ *     responses:
+ *       200:
+ *         description: "Mapa id -> { likes, comments, shares, views }. Id ausente do mapa = nao resolvido."
+ */
+app.post('/api/videos/engagement', async (req, res) => {
+  try {
+    const raw = Array.isArray(req.body?.items) ? req.body.items : []
+    const items = []
+    const seen = new Set()
+    for (const it of raw) {
+      const id = String(it?.id ?? '').trim()
+      if (!/^\d{6,}$/.test(id) || seen.has(id)) continue
+      seen.add(id)
+      items.push({ id, handle: String(it?.handle ?? '').trim() })
+      if (items.length >= ENG_MAX_ITEMS) break
+    }
+    if (!items.length) return res.json({ success: true, data: {}, pending: 0 })
+
+    const data = {}
+    const missing = []
+    for (const it of items) {
+      const cached = engCacheGet(it.id)
+      if (cached === null) missing.push(it)
+      else if (cached) data[it.id] = cached
+      // cached === false (falha recente): sai do mapa, o front mostra vazio.
+    }
+
+    if (!missing.length) return res.json({ success: true, data, pending: 0 })
+
+    // Fila com concorrência fixa. O job continua depois do timeout da resposta:
+    // o que não deu tempo entra no cache e sai pronto na próxima chamada.
+    let cursor = 0
+    const resolved = new Map()
+    const worker = async () => {
+      while (cursor < missing.length) {
+        const it = missing[cursor++]
+        const value = await new Promise((r) => fetchEngagement(it.id, it.handle, r))
+        engCacheSet(it.id, value || false, Boolean(value))
+        if (value) resolved.set(it.id, value)
+      }
+    }
+    const job = Promise.all(
+      Array.from({ length: Math.min(ENG_CONCURRENCY, missing.length) }, worker),
+    )
+
+    await Promise.race([
+      job,
+      new Promise((r) => {
+        const t = setTimeout(r, ENG_WAIT_MS)
+        if (typeof t.unref === 'function') t.unref()
+      }),
+    ])
+
+    for (const [id, value] of resolved) data[id] = value
+    const pending = missing.length - resolved.size
+    if (pending > 0) console.warn(`[engagement] ${pending} de ${missing.length} ficaram para a proxima chamada`)
+    res.json({ success: true, data, pending })
+  } catch (e) {
+    console.error('[engagement]', e && e.message)
+    res.status(500).json({ success: false, message: e && e.message ? e.message : 'internal error' })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Error middleware — converte erros da fila (kaloPostAsync/kaloGetAsync) em 503
 // retriable. Handlers que já capturam individualmente não chegam aqui.
 // ---------------------------------------------------------------------------
