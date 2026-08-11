@@ -279,6 +279,25 @@ const TIKTOK_URL_RE = /^https?:\/\/(www\.|vm\.|vt\.|m\.)?tiktok\.com\/\S+$/i
 // scripts/ensure-ytdlp.cjs); o do sistema (apt) é de 2022 e está quebrado.
 const YTDLP_BIN = existsSync('./bin/yt-dlp') ? './bin/yt-dlp' : 'yt-dlp'
 
+// Handshake usado em TODA chamada de yt-dlp ao TikTok/Instagram.
+//
+// `--impersonate chrome` (sem versão) resolve para o alvo mais novo do
+// curl_cffi — hoje chrome-146/macos-26 — e desde 10/08/2026 o Akamai do TikTok
+// NEGA esse handshake: devolve 200 com uma página "Site Maintenance" de 537
+// bytes (`x-cache: TCP_DENIED`), sem os dados do vídeo. O yt-dlp então morre em
+// `_solve_challenge_and_set_cookies` com "Unexpected response from webpage
+// request" e todo download público falhava. Não é o yt-dlp desatualizado: a
+// nightly 2026.08.04 falha igual, e o issue upstream 17403 segue aberto.
+//
+// Medido na VPS: o alvo antigo `chrome-116` (perfil Windows) passa 5/5, e o
+// User-Agent explícito de Chrome/Windows é o que faz o Akamai entregar a página
+// real — com UA de macOS a mesma requisição volta bloqueada. O Instagram baixa
+// igual nos dois. Se voltar a falhar em massa, o teste de um minuto é
+// `./bin/yt-dlp --impersonate <alvo> --user-agent "<ua>" --get-title <link>`
+// varrendo os alvos de `--list-impersonate-targets`.
+const YTDLP_IMPERSONATE = 'chrome-116'
+const YTDLP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+
 // GET /api/tiktok/health — versão do yt-dlp instalada (diagnóstico).
 app.get('/api/tiktok/health', requireAdminKey, (_req, res) => {
   execFile(YTDLP_BIN, ['--version'], { timeout: 10000 }, (err, stdout) => {
@@ -356,7 +375,9 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
     // standalone bin/yt-dlp). Sem isso o TikTok responde com challenge cookie e
     // o extractor morre em 'Unable to extract universal data for rehydration' —
     // medido em 30/07/2026, mesmo video baixa normal com o handshake de Chrome.
-    args.push('--impersonate', 'chrome')
+    // Alvo e User-Agent vêm fixados de YTDLP_IMPERSONATE/YTDLP_UA: ver o
+    // comentário lá em cima, o alvo "chrome" solto passou a ser bloqueado.
+    args.push('--impersonate', YTDLP_IMPERSONATE, '--user-agent', YTDLP_UA)
     execFile(YTDLP_BIN, args, { timeout: 90000 }, cb)
   }
 
@@ -4298,8 +4319,8 @@ function tiktokVideoUrl (id, handle) {
  * chamador cacheia isso por pouco tempo para não martelar o TikTok.
  *
  * `--skip-download --dump-json` traz o metadado inteiro sem baixar mídia. O
- * `--impersonate chrome` é obrigatório pelo mesmo motivo do baixador: sem o
- * handshake de navegador o TikTok responde com challenge e o extractor morre.
+ * handshake de YTDLP_IMPERSONATE/YTDLP_UA é obrigatório pelo mesmo motivo do
+ * baixador: sem ele o TikTok responde com challenge e o extractor morre.
  */
 function fetchEngagement (id, handle, cb) {
   const url = tiktokVideoUrl(id, handle)
@@ -4310,7 +4331,8 @@ function fetchEngagement (id, handle, cb) {
     '--no-playlist',
     '--no-warnings',
     '--socket-timeout', '15',
-    '--impersonate', 'chrome',
+    '--impersonate', YTDLP_IMPERSONATE,
+    '--user-agent', YTDLP_UA,
   ]
 
   const parse = (stdout) => {
