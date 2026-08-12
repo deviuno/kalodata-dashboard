@@ -344,12 +344,27 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   // Cliente foi embora (aba fechada, front abortou por timeout, rede caiu):
   // devolve a vaga na hora, sem esperar o yt-dlp/ffmpeg terminarem. Vale para
   // a fase de download E para a de envio; `enviaArquivo` derruba o stream.
+  //
+  // `clienteFoi` também interrompe a cadeia de tentativas: sem ela, o processo
+  // seguia baixando pra ninguém e escrevia o .mp4 DEPOIS da limpeza, deixando
+  // órfão no /tmp (medido: ainda sobrava um por download abortado).
+  let clienteFoi = false
+  let filho = null
   res.on('close', () => {
     if (res.writableEnded) return // resposta completa, o fluxo normal cuida
+    clienteFoi = true
     console.warn('[video-download] cliente desistiu, liberando a vaga')
+    if (filho) { try { filho.kill('SIGKILL') } catch { /* já morreu */ } }
     cleanup()
     finaliza()
   })
+  // Desistência no meio do yt-dlp deixa o arquivo aparecer depois do kill;
+  // uma última varrida fecha a janela entre o kill e a escrita do disco.
+  const desistiu = () => {
+    if (!clienteFoi) return false
+    setTimeout(cleanup, 2000)
+    return true
+  }
 
   const classify = (err, stderr) => {
     const s = String(stderr || (err && err.message) || '')
@@ -401,10 +416,13 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
     // Alvo e User-Agent vêm fixados de YTDLP_IMPERSONATE/YTDLP_UA: ver o
     // comentário lá em cima, o alvo "chrome" solto passou a ser bloqueado.
     args.push('--impersonate', YTDLP_IMPERSONATE, '--user-agent', YTDLP_UA)
-    execFile(YTDLP_BIN, args, { timeout: 90000 }, cb)
+    // Guarda o processo pra poder matá-lo se o cliente desistir: sem isso a VPS
+    // (compartilhada com o worker de render) segue baixando pra ninguém.
+    filho = execFile(YTDLP_BIN, args, { timeout: 90000 }, cb)
   }
 
   const responde = () => {
+    if (desistiu()) return
     if (!existsSync(out)) {
       // --max-filesize estourado faz o yt-dlp pular o download sem erro e sem arquivo
       return fim(() => res.status(422).json({ success: false, code: 'too_large', message: 'Vídeo acima do limite de 250MB.' }))
@@ -499,12 +517,14 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   const definitivo = (code) => code === 'ytdlp_missing' || code === 'not_found' || code === 'too_large'
 
   roda(null, (err, _stdout, stderr) => {
+    if (desistiu()) return
     if (!err) return responde()
     const code1 = classify(err, stderr)
     if (definitivo(code1)) return encerra(code1, stderr)
     console.warn('[video-download] 1a tentativa falhou (' + code1 + '), repetindo direto', String(stderr || '').slice(0, 300))
 
     roda(null, (err2, _stdout2, stderr2) => {
+      if (desistiu()) return
       if (!err2) return responde()
       const code2 = classify(err2, stderr2)
       if (definitivo(code2)) return encerra(code2, stderr2)
@@ -517,6 +537,7 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       console.warn('[video-download] 2a tentativa falhou (' + code2 + '), ultima via proxy residencial')
 
       roda(proxy, (err3, _stdout3, stderr3) => {
+        if (desistiu()) return
         if (!err3) return responde()
         const code3 = classify(err3, stderr3)
         console.warn('[video-download] falha nas 3 tentativas', code3, String(stderr3 || '').slice(0, 300))
