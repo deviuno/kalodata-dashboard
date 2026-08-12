@@ -326,7 +326,30 @@ function nomeArquivoVideo (url) {
 function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {}) {
   const out = `/tmp/dlfetch_${Date.now()}_${Math.floor(Math.random() * 1e6)}.mp4`
   const cleanup = () => { try { unlinkSync(out) } catch { /* já removido */ } }
-  const fim = (fn) => { onFim(); return fn() }
+
+  // `onFim` é quem devolve a vaga de "um download por vez" desse visitante, e
+  // ele PRECISA rodar em todo caminho de saída — inclusive quando o cliente
+  // desiste no meio. Sem essa garantia o visitante ficava preso no
+  // "Já tem um download seu em andamento. Espere ele terminar." até o processo
+  // reiniciar: o front desiste em 150s, a resposta morria pendurada e a vaga
+  // nunca voltava. O guard evita liberar duas vezes (abort + fim normal).
+  let finalizado = false
+  const finaliza = () => {
+    if (finalizado) return
+    finalizado = true
+    try { onFim() } catch { /* callback do chamador não derruba o download */ }
+  }
+  const fim = (fn) => { finaliza(); return fn() }
+
+  // Cliente foi embora (aba fechada, front abortou por timeout, rede caiu):
+  // devolve a vaga na hora, sem esperar o yt-dlp/ffmpeg terminarem. Vale para
+  // a fase de download E para a de envio; `enviaArquivo` derruba o stream.
+  res.on('close', () => {
+    if (res.writableEnded) return // resposta completa, o fluxo normal cuida
+    console.warn('[video-download] cliente desistiu, liberando a vaga')
+    cleanup()
+    finaliza()
+  })
 
   const classify = (err, stderr) => {
     const s = String(stderr || (err && err.message) || '')
@@ -434,16 +457,29 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   }
 
   const enviaArquivo = () => {
-    const size = statSync(out).size
+    let size
+    try {
+      size = statSync(out).size
+    } catch (e) {
+      // O arquivo sumiu entre a checagem e o envio (limpeza do /tmp, disco).
+      // Sem o try isso viraria exceção solta e a vaga do visitante ficaria
+      // presa, que é justamente o que não pode acontecer.
+      return encerra('download_failed', String((e && e.message) || 'arquivo sumiu'))
+    }
     res.setHeader('Content-Type', 'video/mp4')
     res.setHeader('Content-Length', String(size))
     if (attachment) {
       res.setHeader('Content-Disposition', `attachment; filename="${nomeArquivoVideo(url)}"`)
     }
     const stream = createReadStream(out)
+    // `pipe` NÃO derruba a origem quando o destino morre: se o cliente some no
+    // meio do envio, o read stream fica pendurado, o 'close' dele nunca chega e
+    // o arquivo fica órfão no /tmp (havia um de 29/07 lá). Por isso o
+    // res.on('close') lá em cima destrói este stream explicitamente.
+    res.on('close', () => { stream.destroy() })
     stream.pipe(res)
-    stream.on('close', () => { cleanup(); onFim() })
-    stream.on('error', () => { cleanup(); onFim(); try { res.destroy() } catch { /* já fechado */ } })
+    stream.on('close', () => { cleanup(); finaliza() })
+    stream.on('error', () => { cleanup(); finaliza(); try { res.destroy() } catch { /* já fechado */ } })
   }
 
   // Cadeia de tentativas: DIRETO -> DIRETO -> PROXY.
@@ -509,6 +545,10 @@ app.post('/api/tiktok/fetch', requireAdminKey, (req, res) => {
 // ganham teto alto pro modo lote.
 const DL_ANON_POR_DIA = 5
 const DL_ASSINANTE_POR_DIA = 200
+// Teto de validade da vaga de "um download por vez". Acima da soma do pior
+// caso real (3 tentativas de 90s + recodificação de 90s), então só dispara
+// quando alguma saída esqueceu de devolver a vaga.
+const DL_VAGA_MAX_MS = 6 * 60 * 1000
 const dlJanelas = new Map() // chave -> { dia: 'YYYY-MM-DD', count, ativo: bool }
 
 function validaPermit (token) {
@@ -547,7 +587,16 @@ app.post('/api/public/video-download', (req, res) => {
   // casual; o pesado é barrado pelo teto + 1 download simultâneo por chave).
   if (dlJanelas.size > 20000) dlJanelas.clear() // trava de memória
   let jan = dlJanelas.get(chave)
-  if (!jan || jan.dia !== hoje) { jan = { dia: hoje, count: 0, ativo: false }; dlJanelas.set(chave, jan) }
+  if (!jan || jan.dia !== hoje) { jan = { dia: hoje, count: 0, ativo: false, desde: 0 }; dlJanelas.set(chave, jan) }
+  // A vaga tem prazo de validade. Um download real morre em bem menos que isso
+  // (3 tentativas de 90s + recodificação), então passar de DL_VAGA_MAX_MS só
+  // acontece se alguma saída nova esquecer de devolver a vaga. Sem esse teto,
+  // um caso desses prendia o visitante no "espere o download terminar" até o
+  // processo reiniciar — foi o que um cliente relatou em 12/08/2026.
+  if (jan.ativo && Date.now() - (jan.desde || 0) > DL_VAGA_MAX_MS) {
+    console.warn('[video-download] vaga presa há', Math.round((Date.now() - (jan.desde || 0)) / 1000) + 's, liberando', chave)
+    jan.ativo = false
+  }
   if (jan.ativo) {
     return res.status(429).json({ success: false, code: 'busy', message: 'Já existe um download em andamento. Aguarde ele terminar.' })
   }
@@ -562,6 +611,7 @@ app.post('/api/public/video-download', (req, res) => {
   }
   jan.count++
   jan.ativo = true
+  jan.desde = Date.now()
   baixarVideoTo(res, url, { attachment: true, onFim: () => { jan.ativo = false } })
 })
 
