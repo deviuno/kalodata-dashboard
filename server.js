@@ -3390,7 +3390,12 @@ app.get('/api/avatar', async (req, res) => {
   const base = `/tmp/avt_${Date.now()}_${Math.floor(Math.random() * 1e6)}`
   const orig = `${base}.bin`
   const jpg = `${base}.jpg`
-  const limpa = () => { for (const f of [orig, jpg]) { try { unlinkSync(f) } catch { /* já foi */ } } }
+  // Destino do resize é arquivo PRÓPRIO, e com extensão .jpg: o ffmpeg escolhe
+  // o formato de saída pela extensão, então mandar o resultado de volta no
+  // `.bin` de entrada fazia o ffmpeg falhar em silêncio e a rota devolvia os
+  // bytes HEIC originais rotulados como JPEG — o navegador seguia sem desenhar.
+  const menor = `${base}_p.jpg`
+  const limpa = () => { for (const f of [orig, jpg, menor]) { try { unlinkSync(f) } catch { /* já foi */ } } }
 
   try {
     const r = await fetch(u, { signal: AbortSignal.timeout(15000) })
@@ -3414,9 +3419,11 @@ app.get('/api/avatar', async (req, res) => {
       // arquivo de ~100 KB pra poucos KB, que é o que o operador espera baixar
       // numa listagem com dezenas de páginas.
       await new Promise((resolve) => {
-        execFile('ffmpeg', ['-v', 'error', '-y', '-i', jpg, '-vf', 'scale=200:-1', '-q:v', '4', orig], { timeout: 20000 }, () => resolve())
+        execFile('ffmpeg', ['-v', 'error', '-y', '-i', jpg, '-vf', 'scale=200:-1', '-q:v', '4', menor], { timeout: 20000 }, () => resolve())
       })
-      saida = existsSync(orig) && statSync(orig).size > 0 ? readFileSync(orig) : readFileSync(jpg)
+      // O resize é otimização; se falhar, entrega o JPEG inteiro, que já é o
+      // que importa — o navegador desenha os dois.
+      saida = existsSync(menor) && statSync(menor).size > 0 ? readFileSync(menor) : readFileSync(jpg)
     }
 
     if (avatarCache.size > AVATAR_CACHE_MAX) avatarCache.clear()
