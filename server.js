@@ -3357,7 +3357,20 @@ app.get('/api/health', (_req, res) => {
 //
 // Esta rota baixa a imagem e devolve JPEG. É o caminho que não custa crédito
 // nenhum no provedor, e o resultado fica em cache aqui e no navegador.
-const AVATAR_HOSTS_OK = ['tiktokcdn-us.com', 'tiktokcdn.com', 'ibyteimg.com', 'cdninstagram.com', 'fbcdn.net']
+// Allowlist por PADRÃO, não por nome exato: o CDN do TikTok serve cada objeto
+// pela região de quem pede, e o sufixo acompanha (`tiktokcdn-us.com`,
+// `tiktokcdn-eu.com`, e o que mais aparecer). Com a lista fixa, a capa de um
+// vídeo servida pela Europa era recusada aqui com invalid_url e continuava sem
+// aparecer na tela — medido em 13/08/2026 com `p16-common-sign.tiktokcdn-eu.com`.
+// O padrão continua fechado o suficiente: só domínios de mídia do TikTok, do
+// Instagram e do Facebook.
+const AVATAR_HOSTS_OK = [
+  /(^|\.)tiktokcdn(-[a-z0-9]+)?\.com$/i,
+  /(^|\.)tiktokcdn-[a-z0-9]+\.[a-z]{2,}$/i,
+  /(^|\.)ibyteimg\.com$/i,
+  /(^|\.)cdninstagram\.com$/i,
+  /(^|\.)fbcdn\.net$/i,
+]
 const AVATAR_MAX_BYTES = 8 * 1024 * 1024
 const AVATAR_TTL_MS = 6 * 60 * 60 * 1000
 const AVATAR_CACHE_MAX = 500
@@ -3367,7 +3380,7 @@ function avatarHostPermitido (u) {
   try {
     const url = new URL(u)
     if (url.protocol !== 'https:') return false
-    return AVATAR_HOSTS_OK.some((h) => url.hostname === h || url.hostname.endsWith('.' + h))
+    return AVATAR_HOSTS_OK.some((padrao) => padrao.test(url.hostname))
   } catch {
     return false
   }
