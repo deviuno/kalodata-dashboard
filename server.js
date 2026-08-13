@@ -3345,6 +3345,93 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString(), queue: getQueueStats() })
 })
 
+// ---------------------------------------------------------------------------
+// Foto de perfil (avatar) — conversão de HEIC
+// ---------------------------------------------------------------------------
+// A busca de usuários do TikTok devolve o avatar SÓ em .heic, e nenhum
+// navegador de desktop desenha HEIC: a <img> dispara onerror e a Fábrica
+// mostrava o ícone genérico no lugar da foto em quase toda a listagem.
+// Medido em 13/08/2026: a mesma foto em .jpeg (que só o endpoint de perfil
+// entrega, a 1 crédito por página) abre normal, e trocar a extensão na URL
+// assinada dá 403.
+//
+// Esta rota baixa a imagem e devolve JPEG. É o caminho que não custa crédito
+// nenhum no provedor, e o resultado fica em cache aqui e no navegador.
+const AVATAR_HOSTS_OK = ['tiktokcdn-us.com', 'tiktokcdn.com', 'ibyteimg.com', 'cdninstagram.com', 'fbcdn.net']
+const AVATAR_MAX_BYTES = 8 * 1024 * 1024
+const AVATAR_TTL_MS = 6 * 60 * 60 * 1000
+const AVATAR_CACHE_MAX = 500
+const avatarCache = new Map() // url -> { buf, at }
+
+function avatarHostPermitido (u) {
+  try {
+    const url = new URL(u)
+    if (url.protocol !== 'https:') return false
+    return AVATAR_HOSTS_OK.some((h) => url.hostname === h || url.hostname.endsWith('.' + h))
+  } catch {
+    return false
+  }
+}
+
+app.get('/api/avatar', async (req, res) => {
+  const u = String(req.query.u || '').trim()
+  // Allowlist de host: sem ela a rota viraria um proxy aberto pra qualquer
+  // endereço, inclusive da rede interna da VPS.
+  if (!avatarHostPermitido(u)) return res.status(400).json({ success: false, code: 'invalid_url' })
+
+  const agora = Date.now()
+  const emCache = avatarCache.get(u)
+  if (emCache && agora - emCache.at < AVATAR_TTL_MS) {
+    res.setHeader('Content-Type', 'image/jpeg')
+    res.setHeader('Cache-Control', 'public, max-age=86400')
+    return res.end(emCache.buf)
+  }
+
+  const base = `/tmp/avt_${Date.now()}_${Math.floor(Math.random() * 1e6)}`
+  const orig = `${base}.bin`
+  const jpg = `${base}.jpg`
+  const limpa = () => { for (const f of [orig, jpg]) { try { unlinkSync(f) } catch { /* já foi */ } } }
+
+  try {
+    const r = await fetch(u, { signal: AbortSignal.timeout(15000) })
+    if (!r.ok) { limpa(); return res.status(502).json({ success: false, code: 'upstream_' + r.status }) }
+    const bytes = Buffer.from(await r.arrayBuffer())
+    if (bytes.length > AVATAR_MAX_BYTES) { limpa(); return res.status(413).json({ success: false, code: 'too_large' }) }
+
+    // "ftyp....heic/heix/mif1" nos primeiros bytes: é o container HEIF. Olhar o
+    // conteúdo em vez da extensão porque a URL vem com querystring assinada e
+    // nem sempre carrega o sufixo.
+    const cabecalho = bytes.subarray(0, 32).toString('latin1')
+    const ehHeic = /ftyp(heic|heix|hevc|mif1|msf1)/i.test(cabecalho)
+
+    let saida = bytes
+    if (ehHeic) {
+      writeFileSync(orig, bytes)
+      await new Promise((resolve, reject) => {
+        execFile('heif-convert', ['-q', '82', orig, jpg], { timeout: 20000 }, (e) => (e ? reject(e) : resolve()))
+      })
+      // Avatar aparece em ~40px na tela; 200px cobre telas retina e derruba o
+      // arquivo de ~100 KB pra poucos KB, que é o que o operador espera baixar
+      // numa listagem com dezenas de páginas.
+      await new Promise((resolve) => {
+        execFile('ffmpeg', ['-v', 'error', '-y', '-i', jpg, '-vf', 'scale=200:-1', '-q:v', '4', orig], { timeout: 20000 }, () => resolve())
+      })
+      saida = existsSync(orig) && statSync(orig).size > 0 ? readFileSync(orig) : readFileSync(jpg)
+    }
+
+    if (avatarCache.size > AVATAR_CACHE_MAX) avatarCache.clear()
+    avatarCache.set(u, { buf: saida, at: agora })
+    limpa()
+    res.setHeader('Content-Type', 'image/jpeg')
+    res.setHeader('Cache-Control', 'public, max-age=86400')
+    return res.end(saida)
+  } catch (e) {
+    limpa()
+    console.warn('[avatar] falhou', String((e && e.message) || e).slice(0, 160))
+    return res.status(502).json({ success: false, code: 'convert_failed' })
+  }
+})
+
 /**
  * @swagger
  * /api/probe-country:
