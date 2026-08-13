@@ -324,6 +324,9 @@ function nomeArquivoVideo (url) {
 // STREAMA o arquivo na resposta. `onFim` roda ao terminar (sucesso ou falha)
 // — usado pelo rate limit de concorrência da rota pública.
 function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {}) {
+  // Marco zero da requisição: é dele que sai o orçamento de tempo usado na
+  // decisão de recodificar ou não (ver transcodaParaH264).
+  const t0 = Date.now()
   const out = `/tmp/dlfetch_${Date.now()}_${Math.floor(Math.random() * 1e6)}.mp4`
   const cleanup = () => { try { unlinkSync(out) } catch { /* já removido */ } }
 
@@ -431,8 +434,18 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
     // trilha sonora, e o yt-dlp entrega um mp3 com nome de .mp4. Entregar isso
     // ao usuario e o mesmo que entregar arquivo quebrado, entao recusamos com
     // motivo proprio em vez de deixar ele descobrir no player.
-    execFile('ffprobe', ['-v', 'error', '-select_streams', 'v', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', out], { timeout: 15000 }, (errProbe, soProbe) => {
-      const codec = String(soProbe || '').trim().split('\n')[0].trim().toLowerCase()
+    // A mesma chamada traz o tamanho do quadro e a duração, que são o que
+    // permite ESTIMAR o custo da recodificação antes de começar (ver
+    // transcodaParaH264): um ffprobe a mais só pra isso seria desperdício.
+    execFile('ffprobe', ['-v', 'error', '-select_streams', 'v', '-show_entries', 'stream=codec_name,width,height', '-show_entries', 'format=duration', '-of', 'csv=p=0', out], { timeout: 15000 }, (errProbe, soProbe) => {
+      const linhas = String(soProbe || '').trim().split('\n').map((l) => l.trim()).filter(Boolean)
+      // A linha do stream vem como "codec,largura,altura"; a do format, só a duração.
+      const linhaStream = linhas.find((l) => l.includes(',')) || ''
+      const [codecCru, wCru, hCru] = linhaStream.split(',')
+      const codec = String(codecCru || '').toLowerCase()
+      const larg = Number(wCru) || 0
+      const alt = Number(hCru) || 0
+      const dur = Number(linhas[linhas.length - 1]) || 0
       if (!errProbe && !codec) {
         cleanup()
         console.warn('[video-download] arquivo sem faixa de video (photo mode)')
@@ -440,7 +453,7 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       }
       // Rede de segurança: se mesmo assim veio um codec que os players comuns
       // não decodificam, recodifica antes de entregar.
-      if (codec && !CODECS_TOCAVEIS.has(codec)) return transcodaParaH264(codec)
+      if (codec && !CODECS_TOCAVEIS.has(codec)) return transcodaParaH264(codec, { dur, larg, alt })
       enviaArquivo()
     })
   }
@@ -450,20 +463,52 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   // não aparece"; HEVC no Windows depende de codec pago instalado.
   const CODECS_TOCAVEIS = new Set(['h264'])
 
-  const transcodaParaH264 = (codec) => {
+  const transcodaParaH264 = (codec, { dur = 0, larg = 0, alt = 0 } = {}) => {
+    // Quanto ainda dá pra gastar antes do front desistir. Sem esse cálculo o
+    // ffmpeg tinha 90s fixos e o pior caso era o mais burro possível: o usuário
+    // esperava os 90s inteiros, o encode estourava no meio e ele recebia o
+    // ORIGINAL do mesmo jeito. Aconteceu duas vezes em 12/08/2026 com um vídeo
+    // de 92 MB. Se não cabe, entregamos o original na hora.
+    const restante = DL_ORCAMENTO_MS - (Date.now() - t0) - DL_MARGEM_ENVIO_MS
+
+    // Custo estimado do encode, medido nesta VPS (4 cores) em 12/08/2026:
+    // 180s de 1080x1920 saem em 80s com veryfast/3 threads, ou seja ~0,45s de
+    // processamento por segundo de vídeo em Full HD. O custo acompanha a
+    // quantidade de pixels, então resoluções menores escalam pra baixo.
+    const pixels = larg * alt
+    const fator = pixels > 0 ? pixels / (1080 * 1920) : 1
+    const custoMs = dur > 0 ? dur * 450 * fator : 0
+
+    if (custoMs > 0 && custoMs > restante) {
+      console.warn(
+        '[video-download] recodificação de ' + codec + ' pulada: precisaria de ~' +
+        Math.round(custoMs / 1000) + 's e só restam ' + Math.round(restante / 1000) +
+        's; entregando o original',
+      )
+      return enviaArquivo()
+    }
+
     const conv = out.replace(/\.mp4$/, '_h264.mp4')
-    console.warn('[video-download] recodificando ' + codec + ' -> h264')
-    execFile('ffmpeg', [
+    console.warn('[video-download] recodificando ' + codec + ' -> h264 (~' + Math.round(custoMs / 1000) + 's estimados)')
+    // Também vai pra `filho`: se o cliente desistir no meio do encode, o
+    // res.on('close') mata o ffmpeg em vez de deixar 3 núcleos ocupados numa
+    // VPS compartilhada pra produzir um arquivo que ninguém vai buscar.
+    filho = execFile('ffmpeg', [
       '-y', '-i', out,
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k',
       '-movflags', '+faststart',
-      // A VPS é compartilhada com o worker de render: 2 threads deixam o resto
-      // do servidor respirando.
-      '-threads', '2',
+      // 3 de 4 núcleos: com 2 o mesmo encode levava 96s, com 3 cai pra 80s, e o
+      // núcleo que sobra mantém o scraper e o worker de render respirando.
+      // Presets mais rápidos foram medidos e descartados: ultrafast corta o
+      // tempo pela metade mas entrega 152 MB no lugar de 60 MB, o que só empurra
+      // a espera do usuário do servidor para a rede dele.
+      '-threads', '3',
       conv,
-      // 90s: o front desiste em 150s e o download em si já gastou parte disso.
-    ], { timeout: 90000 }, (errConv) => {
+      // O teto agora é o que sobrou do orçamento, não um número fixo.
+    ], { timeout: Math.max(15000, restante) }, (errConv) => {
+      // Encode morto pelo abandono do cliente: leva junto o arquivo parcial.
+      if (clienteFoi) { try { unlinkSync(conv) } catch { /* nem existiu */ } return void desistiu() }
       if (errConv || !existsSync(conv)) {
         console.warn('[video-download] recodificacao falhou, entregando original', String((errConv && errConv.message) || '').slice(0, 200))
         try { unlinkSync(conv) } catch { /* nem chegou a existir */ }
@@ -567,9 +612,15 @@ app.post('/api/tiktok/fetch', requireAdminKey, (req, res) => {
 const DL_ANON_POR_DIA = 5
 const DL_ASSINANTE_POR_DIA = 200
 // Teto de validade da vaga de "um download por vez". Acima da soma do pior
-// caso real (3 tentativas de 90s + recodificação de 90s), então só dispara
+// caso real (3 tentativas de 90s + recodificação), então só dispara
 // quando alguma saída esqueceu de devolver a vaga.
 const DL_VAGA_MAX_MS = 6 * 60 * 1000
+// Quanto o navegador do usuário espera antes de desistir (o front usa 150s).
+// Gastar mais que isso não entrega nada a ninguém: a resposta chega numa
+// conexão que já morreu.
+const DL_ORCAMENTO_MS = 150 * 1000
+// Reserva para empacotar e mandar o arquivo pela rede depois de pronto.
+const DL_MARGEM_ENVIO_MS = 20 * 1000
 const dlJanelas = new Map() // chave -> { dia: 'YYYY-MM-DD', count, ativo: bool }
 
 function validaPermit (token) {
