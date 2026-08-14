@@ -85,9 +85,11 @@ async function loadCard(key) {
     ? `${def.label} · sem cookies`
     : `${def.label} · ${cookies.length} cookie${cookies.length > 1 ? 's' : ''}`;
 
-  // Deslogado o envio fica travado de propósito: o servidor grava o que chega,
-  // e uma sessão anônima aqui apaga a sessão viva de lá.
-  sendBtn.disabled = !logged;
+  // O botão continua liberado mesmo deslogado: a sonda pode dar falso negativo
+  // (Cloudflare, rede) e travar justo a recuperação manual. Quem barra sessão
+  // anônima é o servidor, que responde 409 e preserva o jar bom. No auto-sync
+  // do background.js a trava é dura, lá não tem ninguém pra julgar o caso.
+  sendBtn.disabled = cookies.length === 0;
 }
 
 async function getConfig() {
