@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Cookie Sync · Kalodata/Kalowave",
-  "version": "2.3",
-  "description": "Sincroniza cookies de Kalodata/Kalowave. v2.3: servidor padrao kalo-api.domma.ai (o IP antigo estava morto) + auto-sync ligado de fabrica. Mantem: ping ativo antes do sync, ciclo de 5min e listener de cookie change.",
+  "version": "2.4",
+  "description": "Sincroniza cookies de Kalodata/Kalowave. v2.4: so envia com o navegador logado (confere em /api/sso/clip-token) e respeita a recusa do servidor, pra sessao anonima nunca substituir a sessao boa. Mantem: servidor padrao kalo-api.domma.ai, ping ativo, ciclo de 5min e listener de cookie change.",
   "permissions": [
     "cookies",
     "tabs",

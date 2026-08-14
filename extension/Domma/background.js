@@ -13,6 +13,13 @@
 //
 // Funciona MESMO sem aba Kalodata aberta porque o service worker tem
 // permissão `host_permissions` pra kalodata.com.
+//
+// v2.4 (2026-08-14): NÃO sincroniza mais com o navegador deslogado. Antes a
+// única checagem era `cookies.length > 0` — e cookie de tracking (_ga, _fbp,
+// _ttp) existe mesmo sem login, então a extensão enviava uma sessão anônima e o
+// servidor gravava por cima da sessão boa. Foi assim que a sessão da VPS caiu em
+// 13/08 às 19h. Agora o ciclo confirma o login em /api/sso/clip-token antes de
+// mandar qualquer coisa, e respeita a recusa (HTTP 409) do servidor.
 
 const ALARM_NAME = 'kalodata-cookie-sync';
 const SYNC_INTERVAL_MIN = 5;
@@ -21,6 +28,9 @@ const SESSION_COOKIE_HINTS = ['SESSION', 'sessionid', 'kalo_token', 'token'];
 // Endpoint barato no Kalodata pra "tocar" a sessão e forçar Set-Cookie.
 // /user/features é chamada normal da UI — não dispara analytics, é leve.
 const KALODATA_PING_URL = 'https://www.kalodata.com/user/features';
+// Só devolve success+token com sessão LOGADA. É a mesma sonda que o servidor e
+// o refresh-cookies.sh usam, então os três concordam sobre o que é "logado".
+const KALODATA_AUTH_URL = 'https://www.kalodata.com/api/sso/clip-token';
 
 const DOMAINS = {
   kalodata: {
@@ -77,6 +87,32 @@ async function pingKalodata() {
   }
 }
 
+/**
+ * O navegador está realmente logado no Kalodata?
+ *
+ * Cookie de tracking existe sempre, então contar cookies não responde isso.
+ * Aqui a resposta vem do próprio Kalodata. Timeout de 8s; qualquer erro conta
+ * como "não logado" — na dúvida a extensão fica quieta em vez de empurrar uma
+ * sessão anônima pro servidor.
+ */
+async function isBrowserAuthenticated() {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch(KALODATA_AUTH_URL, {
+      credentials: 'include',
+      headers: { accept: 'application/json', country: 'BR', language: 'pt-BR' },
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (!r.ok) return false;
+    const j = await r.json();
+    return !!(j?.success && j?.data?.token);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function syncOnce() {
   const cfg = await chrome.storage.local.get(['serverUrl', 'adminKey', 'autoSync', 'lastSyncAt', 'lastSyncStatus']);
   if (!cfg.autoSync || !cfg.serverUrl || !cfg.adminKey) return;
@@ -90,11 +126,24 @@ async function syncOnce() {
     await chrome.storage.local.set({
       lastSyncAt: Date.now(),
       lastSyncStatus: 'no-cookies',
-      lastSyncError: 'Sem cookies pra enviar — faça login na Kalodata',
+      lastSyncError: 'Sem cookies pra enviar. Faça login na Kalodata.',
+      lastSessionValid: false,
     });
     return;
   }
   const str = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+
+  // 3. Trava de segurança: sem login no navegador, nada sai daqui. Mandar uma
+  //    sessão anônima não é neutro, ela substitui a sessão viva do servidor.
+  if (!(await isBrowserAuthenticated())) {
+    await chrome.storage.local.set({
+      lastSyncAt: Date.now(),
+      lastSyncStatus: 'logged-out',
+      lastSyncError: 'Navegador deslogado do Kalodata. Nada foi enviado.',
+      lastSessionValid: false,
+    });
+    return;
+  }
 
   try {
     const r = await fetch(`${cfg.serverUrl.replace(/\/$/, '')}/api/cookies`, {
@@ -106,9 +155,12 @@ async function syncOnce() {
       body: JSON.stringify({ cookies: str }),
     });
     const j = await r.json().catch(() => ({}));
+    // 409 = o servidor recusou porque o jar dele autentica e o nosso não. Isso
+    // é o guarda funcionando, não uma falha de rede: registra como recusa.
+    const rejected = r.status === 409 || !!j.rejected;
     await chrome.storage.local.set({
       lastSyncAt: Date.now(),
-      lastSyncStatus: r.ok && j.success ? 'ok' : 'fail',
+      lastSyncStatus: r.ok && j.success ? 'ok' : (rejected ? 'rejected' : 'fail'),
       lastSyncError: r.ok && j.success ? null : (j.message ?? `HTTP ${r.status}`),
       lastSessionValid: !!j.sessionValid,
     });

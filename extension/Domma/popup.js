@@ -1,27 +1,26 @@
-// Cookie Sync extension — v2.0
+// Cookie Sync extension — v2.4
 // Funcionalidades:
 //   1. Copia cookies pra clipboard (fallback manual)
 //   2. ENVIA cookies direto pro endpoint /api/cookies do servidor (1 clique)
-//   3. Auto-sync a cada 15 min via chrome.alarms (background.js)
+//   3. Auto-sync a cada 5 min via chrome.alarms (background.js)
 //   4. Settings persistidos em chrome.storage.local
+//
+// v2.4: "Logado" passa a ser resposta do Kalodata (/api/sso/clip-token), não
+// contagem de cookies. Deslogado, o envio fica bloqueado: mandar sessão anônima
+// derrubava a sessão do servidor.
 
-const CF_COOKIE_PREFIXES = ['__cf', 'cf_', 'cfruid', '_cfuvid'];
+const KALODATA_AUTH_URL = 'https://www.kalodata.com/api/sso/clip-token';
 
 const DOMAINS = {
   kalodata: {
     label: 'kalodata.com',
     urls: ['https://www.kalodata.com', 'https://kalodata.com'],
     domains: ['kalodata.com'],
-    sessionCookies: ['SESSION'],
     openUrl: 'https://www.kalodata.com',
   },
 };
 
 const payload = { kalodata: '' };
-
-function isCloudflareCookie(name) {
-  return CF_COOKIE_PREFIXES.some((p) => name.startsWith(p));
-}
 
 async function collectCookies(def) {
   const seen = new Map();
@@ -40,6 +39,24 @@ async function collectCookies(def) {
   return Array.from(seen.values());
 }
 
+/**
+ * Pergunta ao Kalodata se esta sessão do navegador está logada. Cookie de
+ * tracking existe deslogado, então contar cookies mente. Erro vira "não logado".
+ */
+async function isBrowserAuthenticated() {
+  try {
+    const r = await fetch(KALODATA_AUTH_URL, {
+      credentials: 'include',
+      headers: { accept: 'application/json', country: 'BR', language: 'pt-BR' },
+    });
+    if (!r.ok) return false;
+    const j = await r.json();
+    return !!(j?.success && j?.data?.token);
+  } catch {
+    return false;
+  }
+}
+
 async function loadCard(key) {
   const def = DOMAINS[key];
   const subEl = document.getElementById(`sub-${key}`);
@@ -49,12 +66,18 @@ async function loadCard(key) {
   const copyBtn = document.getElementById(`copy-${key}`);
 
   const cookies = await collectCookies(def);
-  const nonCfCount = cookies.filter((c) => !isCloudflareCookie(c.name)).length;
-  const hasSession = def.sessionCookies.length > 0
-    && cookies.some((c) => def.sessionCookies.includes(c.name));
-  const logged = hasSession || nonCfCount > 0;
   const str = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  payload[key] = str;
+  copyBtn.disabled = cookies.length === 0;
 
+  statusEl.classList.remove('ok', 'off');
+  statusEl.classList.add('pending');
+  statusText.textContent = 'Verificando';
+  sendBtn.disabled = true;
+
+  const logged = cookies.length > 0 && await isBrowserAuthenticated();
+
+  statusEl.classList.remove('pending');
   statusEl.classList.toggle('ok', logged);
   statusEl.classList.toggle('off', !logged);
   statusText.textContent = logged ? 'Logado' : 'Não logado';
@@ -62,9 +85,9 @@ async function loadCard(key) {
     ? `${def.label} · sem cookies`
     : `${def.label} · ${cookies.length} cookie${cookies.length > 1 ? 's' : ''}`;
 
-  payload[key] = str;
-  sendBtn.disabled = cookies.length === 0;
-  copyBtn.disabled = cookies.length === 0;
+  // Deslogado o envio fica travado de propósito: o servidor grava o que chega,
+  // e uma sessão anônima aqui apaga a sessão viva de lá.
+  sendBtn.disabled = !logged;
 }
 
 async function getConfig() {
@@ -102,6 +125,7 @@ async function sendToServer(key) {
       body: JSON.stringify({ cookies: str }),
     });
     const j = await r.json().catch(() => ({}));
+    const rejected = r.status === 409 || !!j.rejected;
     if (r.ok && j.success) {
       sendBtn.classList.add('success');
       span.textContent = j.sessionValid ? '✓ Sessão válida' : '⚠ Aceito mas sessão inválida';
@@ -114,10 +138,12 @@ async function sendToServer(key) {
       renderLastSync();
     } else {
       sendBtn.classList.add('error');
-      span.textContent = `Falha: ${j.message ?? r.status}`;
+      // Recusa do servidor: o jar de lá autentica e o daqui não. Preservar o
+      // dele é o comportamento certo, então a mensagem aponta o que resolve.
+      span.textContent = rejected ? 'Recusado: faça login antes' : `Falha: ${j.message ?? r.status}`;
       await chrome.storage.local.set({
         lastSyncAt: Date.now(),
-        lastSyncStatus: 'fail',
+        lastSyncStatus: rejected ? 'rejected' : 'fail',
         lastSyncError: j.message ?? `HTTP ${r.status}`,
       });
       renderLastSync();
@@ -192,6 +218,14 @@ async function renderLastSync() {
     el.textContent = `Última sync: ${when} · ${cfg.lastSessionValid ? 'sessão válida' : 'sessão pendente'}`;
     el.classList.add('ok');
     el.classList.remove('fail');
+  } else if (cfg.lastSyncStatus === 'logged-out' || cfg.lastSyncStatus === 'no-cookies') {
+    el.textContent = `${when} · navegador deslogado, nada enviado`;
+    el.classList.add('fail');
+    el.classList.remove('ok');
+  } else if (cfg.lastSyncStatus === 'rejected') {
+    el.textContent = `${when} · servidor recusou, sessão dele preservada`;
+    el.classList.add('fail');
+    el.classList.remove('ok');
   } else {
     el.textContent = `Última sync: ${when} · falhou (${cfg.lastSyncError ?? 'erro'})`;
     el.classList.add('fail');

@@ -690,16 +690,70 @@ app.post('/api/public/video-download', (req, res) => {
 // ---------------------------------------------------------------------------
 // Cookies
 // ---------------------------------------------------------------------------
+const COOKIE_FILE = 'cookies.txt'
+// Ultimo jar que provou estar AUTENTICADO. Serve de rede de seguranca: se algo
+// gravar lixo por cima (ver o PUT /api/cookies), o keepalive volta pra ele.
+const LAST_GOOD_FILE = 'cookies.txt.last-good'
+
 function getCookies() {
   try {
-    return readFileSync('cookies.txt', 'utf-8').trim()
+    return readFileSync(COOKIE_FILE, 'utf-8').trim()
   } catch {
     return ''
   }
 }
 
 function setCookies(cookies) {
-  writeFileSync('cookies.txt', cookies.trim() + '\n', 'utf-8')
+  writeFileSync(COOKIE_FILE, cookies.trim() + '\n', 'utf-8')
+}
+
+function getLastGoodCookies() {
+  try {
+    return readFileSync(LAST_GOOD_FILE, 'utf-8').trim()
+  } catch {
+    return ''
+  }
+}
+
+function saveLastGoodCookies(cookies) {
+  const value = String(cookies || '').trim()
+  if (!value || value === getLastGoodCookies()) return
+  try {
+    writeFileSync(LAST_GOOD_FILE, value + '\n', 'utf-8')
+  } catch (e) {
+    console.warn('[cookies] nao consegui gravar o last-good:', e?.message)
+  }
+}
+
+/**
+ * Diz se uma string de cookies esta de fato LOGADA no Kalodata.
+ *
+ * `/api/sso/clip-token` so devolve success+token com sessao autenticada — e a
+ * mesma sonda que o refresh-cookies.sh usa, o que mantem os dois criterios
+ * iguais. Cookie anonimo (so tracking: _ga, _fbp, _ttp...) reprova aqui, e e
+ * exatamente isso que precisamos distinguir: a extensao Cookie Sync manda
+ * cookies mesmo com o Chrome deslogado, porque cookie de tracking sempre existe.
+ *
+ * Nunca lanca: qualquer falha (rede, Cloudflare, JSON torto) vira `false`.
+ */
+function isAuthenticatedCookie(cookies) {
+  const value = String(cookies || '').trim()
+  if (!value) return false
+  try {
+    const out = execFileSync('/usr/local/bin/curl_chrome116', [
+      '-s', '--max-time', '20',
+      '-A', UA,
+      '-b', value,
+      '-H', 'accept: application/json',
+      '-H', 'country: BR',
+      '-H', 'language: pt-BR',
+      'https://www.kalodata.com/api/sso/clip-token',
+    ], { encoding: 'utf-8', timeout: 25000 })
+    const d = JSON.parse(out)
+    return !!(d?.success && d?.data?.token)
+  } catch {
+    return false
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1150,10 +1204,26 @@ cron.schedule(config.cookie_check_cron, async () => {
 // extensao usa no "ping ativo".
 const KEEPALIVE_CRON = process.env.KALO_KEEPALIVE_CRON || config.session_keepalive_cron || '*/10 * * * *'
 cron.schedule(KEEPALIVE_CRON, () => {
-  if (!getCookies()) return // sem sessao base nao ha o que renovar
+  const current = getCookies()
+  if (!current) return // sem sessao base nao ha o que renovar
   try {
     const ok = checkSession() // dispara /user/features -> Set-Cookie -> jar
-    if (!ok) console.warn('[KEEPALIVE] upstream recusou a sessao (precisa de novo login)')
+    if (ok) {
+      // Jar vivo: vira o ponto de restauracao. Nao custa nada quando nao mudou.
+      saveLastGoodCookies(getCookies())
+      return
+    }
+
+    // Sessao recusada. Se alguem gravou lixo por cima (a extensao Cookie Sync
+    // ja fez isso), o ultimo jar autenticado ainda pode estar de pe — volta pra
+    // ele. Se o proprio last-good tambem morreu, ai e login humano mesmo.
+    const lastGood = getLastGoodCookies()
+    if (lastGood && lastGood !== current && isAuthenticatedCookie(lastGood)) {
+      setCookies(lastGood)
+      console.warn('[KEEPALIVE] jar restaurado a partir de cookies.txt.last-good')
+      return
+    }
+    console.warn('[KEEPALIVE] upstream recusou a sessao (precisa de novo login)')
   } catch (e) {
     console.warn('[KEEPALIVE] falhou:', e?.message)
   }
@@ -3123,10 +3193,18 @@ app.get('/api/session', requireAdminKey, (_req, res) => {
  */
 app.get('/api/cookies', requireAdminKey, (_req, res) => {
   const cookies = getCookies()
+  const lastGood = getLastGoodCookies()
   res.json({
     exists: !!cookies,
     length: cookies.length,
     preview: cookies ? cookies.substring(0, 50) + '...' : null,
+    // Ponto de restauracao do keepalive: se o jar atual for lixo, e daqui que
+    // ele volta. `sameAsCurrent:false` com sessao caida = alguem gravou por cima.
+    lastGood: {
+      exists: !!lastGood,
+      length: lastGood.length,
+      sameAsCurrent: !!lastGood && lastGood === cookies,
+    },
   })
 })
 
@@ -3163,13 +3241,43 @@ app.get('/api/cookies', requireAdminKey, (_req, res) => {
  *         description: Cookie string ausente
  */
 app.put('/api/cookies', requireAdminKey, (req, res) => {
-  const { cookies } = req.body || {}
+  const { cookies, force } = req.body || {}
   if (!cookies || typeof cookies !== 'string' || !cookies.trim()) {
     return res.status(400).json({ success: false, message: 'Campo "cookies" e obrigatorio (string nao vazia)' })
   }
-  setCookies(cookies)
+
+  const incoming = cookies.trim()
+  const current = getCookies()
+
+  // No-op: a extensao reenvia o mesmo jar a cada 5 min. Sem isso, gastariamos
+  // duas sondas de autenticacao por ciclo pra nao mudar nada.
+  if (incoming === current) {
+    return res.json({ success: true, sessionValid: null, unchanged: true, updatedAt: new Date().toISOString() })
+  }
+
+  const incomingAuth = isAuthenticatedCookie(incoming)
+
+  // GUARDA (2026-08-14): antes daqui o PUT gravava cegamente. Em 13/08 as 19h a
+  // extensao Cookie Sync, rodando num Chrome deslogado, trocou o jar autenticado
+  // (1976 chars) por um anonimo (1651) e derrubou a sessao — o keepalive e o
+  // refresh-cookies.sh nao tem como desfazer isso, so um login humano.
+  // Agora cookie que nao autentica nunca passa por cima de um que autentica.
+  if (!incomingAuth && !force) {
+    if (current && isAuthenticatedCookie(current)) {
+      console.warn('[cookies] PUT recusado: cookie recebido nao autentica e o atual autentica')
+      return res.status(409).json({
+        success: false,
+        rejected: true,
+        sessionValid: true,
+        message: 'Cookie recebido nao esta logado no Kalodata. O jar autenticado atual foi mantido. Faca login em kalodata.com antes de sincronizar (ou repita com force:true).',
+      })
+    }
+  }
+
+  setCookies(incoming)
+  if (incomingAuth) saveLastGoodCookies(incoming)
   const valid = checkSession()
-  res.json({ success: true, sessionValid: valid, updatedAt: new Date().toISOString() })
+  res.json({ success: true, sessionValid: valid, authenticated: incomingAuth, updatedAt: new Date().toISOString() })
 })
 
 // ---------------------------------------------------------------------------
