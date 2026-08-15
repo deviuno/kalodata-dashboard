@@ -28,3 +28,7 @@ cookies.txt
 config.json
 public/data/*.json
 .env
+
+# Config do pm2: carrega SCRAPECREATORS_API_KEY e a credencial do proxy em
+# texto puro. Fica FORA do git: um git add -A publicaria as duas.
+ecosystem.config.cjs
