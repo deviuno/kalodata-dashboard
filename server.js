@@ -298,6 +298,88 @@ const YTDLP_BIN = existsSync('./bin/yt-dlp') ? './bin/yt-dlp' : 'yt-dlp'
 const YTDLP_IMPERSONATE = 'chrome-116'
 const YTDLP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
 
+// ── Fallback do TikTok pelo ScrapeCreators (15/08/2026) ─────────────────────
+// O extractor de TikTok do yt-dlp quebrou GLOBALMENTE: a estável 2026.07.04 e a
+// nightly 2026.08.04 falham igual, em TODOS os alvos de impersonate, com e sem
+// proxy residencial, e também fora desta VPS (testado de uma máquina doméstica
+// com IP brasileiro). O dump da página tem 537 bytes com "Site Maintenance", que
+// é a assinatura de bloqueio do Akamai. Ou seja: não é alvo de handshake, não é
+// IP e não é versão, então trocar configuração não resolve.
+//
+// O ScrapeCreators (que o projeto já assina e já usa para o Radar e a Fábrica)
+// devolve o `play_addr` do vídeo, e ele baixa LIMPO, sem marca d'água: conferido
+// no frame em 15/08. O `has_watermark: true` do payload se refere ao
+// `download_addr`, que é o do botão de download do app; o `play_addr` é o que o
+// app reproduz.
+//
+// A URL expira em algumas horas, e é por isso que `_shared/scrapecreators.ts`
+// do lado das edges guarda `videoUrl: null` de propósito. Aqui não importa: o
+// download é IMEDIATO e o arquivo vai para o bucket logo em seguida.
+//
+// Fica como FALLBACK, e não como caminho principal, por dois motivos: cada
+// chamada consome crédito da conta, e o yt-dlp volta a ser melhor no dia em que
+// o upstream consertar (ele entrega o formato já escolhido pelo seletor `-f`,
+// que é o que garante h264 com áudio).
+const SCRAPECREATORS_KEY = process.env.SCRAPECREATORS_API_KEY || ''
+const SCRAPECREATORS_VIDEO_URL = 'https://api.scrapecreators.com/v2/tiktok/video'
+/** Teto do arquivo vindo do fallback, espelhando o --max-filesize do yt-dlp. */
+const SC_MAX_BYTES = 250 * 1024 * 1024
+const SC_TIMEOUT_MS = 60000
+
+/**
+ * Baixa o mp4 do TikTok pelo ScrapeCreators e grava em `destino`.
+ * Devolve null quando deu certo, ou um código de erro para o chamador registrar.
+ *
+ * A ordem das fontes é deliberada: `play_addr` primeiro porque é a que vem sem
+ * marca d'água; `play_addr_h264` como igual dela em codec garantido; e o
+ * `download_addr` por último, SÓ porque um arquivo com marca d'água ainda é
+ * melhor que nenhum arquivo (a etapa de edição consegue cortá-la, um erro não).
+ */
+async function baixarTikTokViaScrapeCreators (url, destino) {
+  if (!SCRAPECREATORS_KEY) return 'sc_sem_chave'
+  let detalhe
+  try {
+    const resp = await fetch(`${SCRAPECREATORS_VIDEO_URL}?url=${encodeURIComponent(url)}`, {
+      headers: { 'x-api-key': SCRAPECREATORS_KEY },
+      signal: AbortSignal.timeout(SC_TIMEOUT_MS),
+    })
+    if (!resp.ok) return `sc_http_${resp.status}`
+    const corpo = await resp.json()
+    detalhe = corpo && corpo.aweme_detail
+  } catch (e) {
+    return 'sc_indisponivel'
+  }
+  const video = (detalhe && detalhe.video) || null
+  if (!video) return 'sc_sem_video'
+
+  const candidatas = []
+  for (const campo of ['play_addr', 'play_addr_h264', 'download_addr']) {
+    const lista = (video[campo] && video[campo].url_list) || []
+    for (const u of lista) if (typeof u === 'string' && u) candidatas.push(u)
+  }
+  if (!candidatas.length) return 'sc_sem_url'
+
+  // As URLs do CDN do TikTok recusam requisição sem UA de navegador e sem
+  // Referer do próprio tiktok.com: sem os dois vem 403.
+  const cabecalhos = { 'User-Agent': YTDLP_UA, Referer: 'https://www.tiktok.com/' }
+  for (const candidata of candidatas) {
+    try {
+      const r = await fetch(candidata, { headers: cabecalhos, signal: AbortSignal.timeout(SC_TIMEOUT_MS) })
+      if (!r.ok) continue
+      const buf = Buffer.from(await r.arrayBuffer())
+      // Uma página de erro do CDN também chega com 200: um mp4 de verdade não
+      // tem 50 KB, e deixar passar viraria "arquivo quebrado" lá na frente.
+      if (buf.length < 50000) continue
+      if (buf.length > SC_MAX_BYTES) return 'too_large'
+      writeFileSync(destino, buf)
+      return null
+    } catch (e) {
+      // Próxima candidata: a lista traz o mesmo arquivo em CDNs diferentes.
+    }
+  }
+  return 'sc_download_falhou'
+}
+
 // GET /api/tiktok/health — versão do yt-dlp instalada (diagnóstico).
 app.get('/api/tiktok/health', requireAdminKey, (_req, res) => {
   execFile(YTDLP_BIN, ['--version'], { timeout: 10000 }, (err, stdout) => {
@@ -561,6 +643,38 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   // binario sumiu. Repetir so faria o usuario esperar 3x pelo mesmo nao.
   const definitivo = (code) => code === 'ytdlp_missing' || code === 'not_found' || code === 'too_large'
 
+  /**
+   * Última cartada antes de devolver erro: o ScrapeCreators (ver o comentário
+   * das constantes lá em cima). Só para TikTok, porque o Instagram continua
+   * baixando normalmente pelo yt-dlp e gastar crédito ali seria desperdício.
+   *
+   * O sucesso cai no MESMO `responde()` das tentativas normais, de propósito: é
+   * ele que roda o ffprobe, pega carrossel de fotos, recodifica o que os players
+   * não abrem e devolve o arquivo. Um caminho de entrega paralelo aqui seria uma
+   * segunda implementação das mesmas regras, fadada a divergir.
+   */
+  const desisteOuFallback = (code, stderr) => {
+    if (ehInstagram || !SCRAPECREATORS_KEY) return encerra(code, stderr)
+    console.warn('[video-download] yt-dlp esgotou, tentando ScrapeCreators')
+    baixarTikTokViaScrapeCreators(url, out)
+      .then((erroSc) => {
+        if (desistiu()) return
+        if (!erroSc) {
+          console.warn('[video-download] ScrapeCreators resolveu o que o yt-dlp nao conseguiu')
+          return responde()
+        }
+        console.warn('[video-download] ScrapeCreators tambem falhou:', erroSc)
+        // O erro que o usuário vê continua sendo o do yt-dlp: é o que descreve
+        // a causa raiz, e trocar por "sc_..." só esconderia o motivo real.
+        return encerra(code, stderr)
+      })
+      .catch((e) => {
+        if (desistiu()) return
+        console.warn('[video-download] ScrapeCreators estourou:', String((e && e.message) || e).slice(0, 200))
+        return encerra(code, stderr)
+      })
+  }
+
   roda(null, (err, _stdout, stderr) => {
     if (desistiu()) return
     if (!err) return responde()
@@ -577,7 +691,7 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       const proxy = getNextProxy('br')
       if (!proxy) {
         console.warn('[video-download] 2 tentativas diretas falharam e nao ha proxy', code2)
-        return encerra(code2, stderr2)
+        return desisteOuFallback(code2, stderr2)
       }
       console.warn('[video-download] 2a tentativa falhou (' + code2 + '), ultima via proxy residencial')
 
@@ -586,7 +700,7 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
         if (!err3) return responde()
         const code3 = classify(err3, stderr3)
         console.warn('[video-download] falha nas 3 tentativas', code3, String(stderr3 || '').slice(0, 300))
-        return encerra(code3, stderr3)
+        return desisteOuFallback(code3, stderr3)
       })
     })
   })
