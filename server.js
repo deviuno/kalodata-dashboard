@@ -380,6 +380,264 @@ async function baixarTikTokViaScrapeCreators (url, destino) {
   return 'sc_download_falhou'
 }
 
+// ── Caminho próprio do TikTok, pelo FlareSolverr (17/08/2026) ───────────────
+// O ScrapeCreators cobra por chamada, e em 17/08 a conta zerou: com o extractor
+// do yt-dlp quebrado, o baixador parou INTEIRO (HTTP 402, "out of credits"). O
+// que o serviço pago faz por nós é uma coisa só: abrir a página num navegador de
+// verdade, que é o que o Akamai do TikTok exige desde 15/08.
+//
+// Só que navegador de verdade nós já temos nesta máquina: o FlareSolverr que
+// renova o cf_clearance da sessão de mercado a cada 20 min. Medido em 17/08 no
+// mesmo link que falhava na tela: ele abre a página ("Challenge not detected"),
+// resolve o encurtador vt.tiktok.com até a URL real e devolve o HTML com o bloco
+// __UNIVERSAL_DATA_FOR_REHYDRATION__, de onde sai o endereço do arquivo. O mp4
+// baixou h264+aac, íntegro no ffprobe, sem gastar crédito.
+//
+// Por isso este caminho entra ANTES do pago: mesma capacidade, custo zero por
+// vídeo. O ScrapeCreators fica como última rede, para o dia em que o TikTok
+// mudar o formato da página e este extrator aqui precisar de manutenção.
+//
+// NÃO usa a sessão nomeada `kalodata-session`: aquela guarda o login do mercado
+// e é a coisa mais frágil da VPS (só volta com humano logando). Sessão anônima
+// por chamada custa alguns segundos a mais e não tem como contaminar o login.
+const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL || 'http://localhost:8191/v1'
+const FS_PAGE_TIMEOUT_MS = 90000
+const FS_DOWNLOAD_TIMEOUT_MS = 60000
+
+/** Lê os codecs presentes no arquivo. Devolve { video, audio } em minúsculas. */
+function codecsDoArquivo (caminho) {
+  return new Promise((resolve) => {
+    execFile('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name', '-of', 'csv=p=0', caminho], { timeout: 15000 }, (err, stdout) => {
+      if (err) return resolve({ video: '', audio: '' })
+      const achado = { video: '', audio: '' }
+      for (const linha of String(stdout || '').trim().split('\n')) {
+        const [nome, tipo] = linha.trim().split(',')
+        if (tipo === 'video' && !achado.video) achado.video = String(nome || '').toLowerCase()
+        if (tipo === 'audio' && !achado.audio) achado.audio = String(nome || '').toLowerCase()
+      }
+      resolve(achado)
+    })
+  })
+}
+
+/** Abre uma URL no FlareSolverr. Devolve a `solution` ou null. */
+async function abrePaginaNoFlareSolverr (url) {
+  try {
+    const resp = await fetch(FLARESOLVERR_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: 'request.get', url, maxTimeout: FS_PAGE_TIMEOUT_MS - 10000 }),
+      signal: AbortSignal.timeout(FS_PAGE_TIMEOUT_MS),
+    })
+    if (!resp.ok) return null
+    const corpo = await resp.json()
+    if (!corpo || corpo.status !== 'ok') return null
+    return corpo.solution || null
+  } catch (e) {
+    return null
+  }
+}
+
+/**
+ * Candidatas da PÁGINA NORMAL do vídeo, que é a de melhor qualidade: o
+ * `bitrateInfo` lista as faixas, e nele existe 1080p (medido 17/08: a página
+ * oferece 1080x1920, enquanto o embed só tem 576x1024).
+ *
+ * A ordem segue a mesma regra do seletor `-f` do yt-dlp: h264 primeiro (as
+ * faixas h265/bytevc1 do TikTok vêm sem trilha de áudio na prática) e, entre as
+ * h264, a de maior quadro.
+ */
+function candidatasDaPagina (html) {
+  const bloco = html.match(/id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/)
+  if (!bloco) return null
+  let item
+  try {
+    item = JSON.parse(bloco[1]).__DEFAULT_SCOPE__['webapp.video-detail'].itemInfo.itemStruct
+  } catch (e) {
+    return null
+  }
+  if (item && item.imagePost) return { photo: true, urls: [] }
+  const video = item && item.video
+  if (!video) return null
+
+  const faixas = Array.isArray(video.bitrateInfo) ? video.bitrateInfo.slice() : []
+  const pontua = (f) => {
+    const pa = f.PlayAddr || {}
+    const codec = String(f.CodecType || '').toLowerCase()
+    const ehH264 = !codec || codec.includes('h264') || codec.includes('avc')
+    return [ehH264 ? 1 : 0, (Number(pa.Width) || 0) * (Number(pa.Height) || 0), Number(f.Bitrate) || 0]
+  }
+  faixas.sort((a, b) => {
+    const [ah, aq, ab] = pontua(a)
+    const [bh, bq, bb] = pontua(b)
+    return (bh - ah) || (bq - aq) || (bb - ab)
+  })
+
+  const urls = []
+  for (const faixa of faixas) {
+    for (const u of (faixa.PlayAddr && faixa.PlayAddr.UrlList) || []) {
+      if (typeof u === 'string' && u) urls.push(u)
+    }
+  }
+  for (const u of [video.playAddr, video.downloadAddr]) {
+    if (typeof u === 'string' && u) urls.push(u)
+  }
+  return urls.length ? { photo: false, urls } : null
+}
+
+/**
+ * Candidatas da página de EMBED (`/embed/v2/<id>`), que é a rede de segurança.
+ *
+ * Ela existe porque a URL canônica (`tiktok.com/@user/video/<id>`) é RECUSADA
+ * pelo Akamai mesmo no navegador: devolve a página "Site Maintenance" de 520
+ * bytes, medido 17/08 em 5 tentativas, inclusive com sessão já aquecida na home.
+ * Só o link curto (vt./vm.) entrega a página real. Como o usuário cola o que
+ * quiser, sem o embed metade dos links não teria caminho próprio.
+ *
+ * Em compensação o embed só traz uma resolução (576x1024 no caso medido), por
+ * isso ele é o segundo a ser tentado, e não o primeiro.
+ */
+function candidatasDoEmbed (html) {
+  const bloco = html.match(/id="__FRONTITY_CONNECT_STATE__"[^>]*>([\s\S]*?)<\/script>/)
+  if (!bloco) return null
+  try {
+    const dados = JSON.parse(bloco[1]).source.data
+    const chave = Object.keys(dados).find((k) => k.includes('/embed/'))
+    const videoData = chave && dados[chave] && dados[chave].videoData
+    if (!videoData) return null
+    if (videoData.imagePostInfo) return { photo: true, urls: [] }
+    const urls = ((videoData.itemInfos && videoData.itemInfos.video) || {}).urls || []
+    const limpas = urls.filter((u) => typeof u === 'string' && u)
+    return limpas.length ? { photo: false, urls: limpas } : null
+  } catch (e) {
+    return null
+  }
+}
+
+/** ID numérico do vídeo, venha ele da URL colada ou da URL que o encurtador abriu. */
+function idDoVideoTikTok (...urls) {
+  for (const u of urls) {
+    const m = String(u || '').match(/\/video\/(\d{8,})/)
+    if (m) return m[1]
+  }
+  return null
+}
+
+/**
+ * Abre o encurtador (vt./vm.) só até o redirect, para descobrir o ID do vídeo.
+ *
+ * Vale a requisição extra porque é ela que garante o caminho do embed quando a
+ * página do vídeo vem sem os dados: sem o ID não há embed, e o link curto (o que
+ * o botão Compartilhar do TikTok entrega, ou seja, o caso comum) ficaria sem
+ * rede de segurança. O redirect responde 301 na hora, sem passar pelo bloqueio
+ * que derruba a página canônica.
+ */
+async function idPeloEncurtador (url) {
+  try {
+    const r = await fetch(url, {
+      method: 'HEAD',
+      redirect: 'manual',
+      headers: { 'User-Agent': YTDLP_UA },
+      signal: AbortSignal.timeout(20000),
+    })
+    return idDoVideoTikTok(r.headers.get('location'))
+  } catch (e) {
+    return null
+  }
+}
+
+/**
+ * Baixa o mp4 do TikTok abrindo a página no FlareSolverr e lendo o endereço do
+ * arquivo no JSON que o próprio site embute.
+ * Devolve null quando deu certo, ou um código de erro para o chamador registrar.
+ */
+async function baixarTikTokViaFlareSolverr (url, destino) {
+  let cabecalhos = null
+  let candidatas = null
+  let idVideo = idDoVideoTikTok(url)
+
+  const cabecalhosDe = (solucao) => {
+    // O CDN do TikTok recusa quem não parece navegador: precisa do MESMO
+    // User-Agent que abriu a página, do Referer do tiktok.com e dos cookies da
+    // sessão. Faltando qualquer um deles vem 403.
+    const h = { 'User-Agent': solucao.userAgent || YTDLP_UA, Referer: 'https://www.tiktok.com/' }
+    const cookies = (solucao.cookies || []).map((c) => `${c.name}=${c.value}`).join('; ')
+    if (cookies) h.Cookie = cookies
+    return h
+  }
+
+  // A página vem hidratada uma hora e como casca vazia na outra: medido 17/08,
+  // o MESMO link alternou entre 619 KB (com dados) e 46-70 KB (sem), e a segunda
+  // rodada de tentativas passou 3/3. É a mesma intermitência de sempre do
+  // TikTok, então repetir vale mais que desistir.
+  for (let tentativa = 1; tentativa <= 2 && !candidatas; tentativa++) {
+    const solucao = await abrePaginaNoFlareSolverr(url)
+    if (!solucao) { console.warn('[flaresolverr] pagina nao abriu (tentativa ' + tentativa + ')'); continue }
+    idVideo = idVideo || idDoVideoTikTok(solucao.url)
+    const achado = candidatasDaPagina(solucao.response || '')
+    if (achado && achado.photo) return 'fs_photo_mode'
+    if (achado) {
+      candidatas = achado.urls
+      cabecalhos = cabecalhosDe(solucao)
+    } else {
+      console.warn('[flaresolverr] pagina veio sem os dados do video (tentativa ' + tentativa + ', ' + String(solucao.response || '').length + ' bytes)')
+    }
+  }
+
+  if (!candidatas && !idVideo) idVideo = await idPeloEncurtador(url)
+
+  if (!candidatas && idVideo) {
+    console.warn('[flaresolverr] caindo para o embed do video ' + idVideo)
+    const solucao = await abrePaginaNoFlareSolverr(`https://www.tiktok.com/embed/v2/${idVideo}`)
+    if (solucao) {
+      const achado = candidatasDoEmbed(solucao.response || '')
+      if (achado && achado.photo) return 'fs_photo_mode'
+      if (achado) {
+        candidatas = achado.urls
+        cabecalhos = cabecalhosDe(solucao)
+      }
+    }
+  }
+
+  if (!candidatas || !candidatas.length) return 'fs_sem_dados'
+
+  // O motivo de cada recusa vai para o log: quando isso aqui falhar de novo (e
+  // vai, o TikTok muda), a diferença entre "o CDN negou" e "veio sem áudio" é o
+  // que separa cinco minutos de diagnóstico de uma tarde.
+  let ultimoErro = 'fs_download_falhou'
+  let n = 0
+  for (const candidata of candidatas) {
+    n++
+    const onde = `candidata ${n}/${candidatas.length}`
+    try {
+      const r = await fetch(candidata, { headers: cabecalhos, signal: AbortSignal.timeout(FS_DOWNLOAD_TIMEOUT_MS) })
+      if (!r.ok) { console.warn(`[flaresolverr] ${onde}: HTTP ${r.status}`); continue }
+      const buf = Buffer.from(await r.arrayBuffer())
+      // Página de erro do CDN também chega com 200: um mp4 de verdade não tem
+      // 50 KB, e deixar passar viraria "arquivo quebrado" lá na frente.
+      if (buf.length < 50000) { console.warn(`[flaresolverr] ${onde}: corpo de ${buf.length} bytes, nao e video`); continue }
+      if (buf.length > SC_MAX_BYTES) return 'too_large'
+      writeFileSync(destino, buf)
+      // A faixa escolhida pode vir MUDA (aconteceu com os formatos "1080p" do
+      // TikTok em 26/07, com o metadado mentindo que tinha aac). Como aqui a
+      // escolha é nossa, e não do yt-dlp, conferimos antes de aceitar: sem
+      // áudio, tenta a próxima candidata em vez de entregar vídeo sem som.
+      const { video: cv, audio: ca } = await codecsDoArquivo(destino)
+      if (cv && ca) {
+        console.warn(`[flaresolverr] ${onde}: ok, ${buf.length} bytes (${cv}+${ca})`)
+        return null
+      }
+      console.warn(`[flaresolverr] ${onde}: recusada por codec (video=${cv || '-'}, audio=${ca || '-'})`)
+      ultimoErro = ca && !cv ? 'fs_photo_mode' : 'fs_sem_audio'
+      try { unlinkSync(destino) } catch { /* já removido */ }
+    } catch (e) {
+      // Próxima candidata: a lista traz o mesmo arquivo em CDNs diferentes.
+      console.warn(`[flaresolverr] ${onde}: ${String((e && e.message) || e).slice(0, 120)}`)
+    }
+  }
+  return ultimoErro
+}
+
 // GET /api/tiktok/health — versão do yt-dlp instalada (diagnóstico).
 app.get('/api/tiktok/health', requireAdminKey, (_req, res) => {
   execFile(YTDLP_BIN, ['--version'], { timeout: 10000 }, (err, stdout) => {
@@ -644,9 +902,14 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   const definitivo = (code) => code === 'ytdlp_missing' || code === 'not_found' || code === 'too_large'
 
   /**
-   * Última cartada antes de devolver erro: o ScrapeCreators (ver o comentário
-   * das constantes lá em cima). Só para TikTok, porque o Instagram continua
-   * baixando normalmente pelo yt-dlp e gastar crédito ali seria desperdício.
+   * Últimas cartadas antes de devolver erro, nesta ordem: o FlareSolverr desta
+   * máquina e, só se ele falhar, o ScrapeCreators. Ambas só para TikTok, porque
+   * o Instagram continua baixando normalmente pelo yt-dlp.
+   *
+   * A ordem é a diferença entre um produto que depende de saldo e um que não
+   * depende: o FlareSolverr já está de pé aqui e não cobra por vídeo, enquanto
+   * cada chamada ao ScrapeCreators consome crédito (e em 17/08 o crédito acabou,
+   * derrubando o baixador inteiro).
    *
    * O sucesso cai no MESMO `responde()` das tentativas normais, de propósito: é
    * ele que roda o ffprobe, pega carrossel de fotos, recodifica o que os players
@@ -654,24 +917,52 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
    * segunda implementação das mesmas regras, fadada a divergir.
    */
   const desisteOuFallback = (code, stderr) => {
-    if (ehInstagram || !SCRAPECREATORS_KEY) return encerra(code, stderr)
-    console.warn('[video-download] yt-dlp esgotou, tentando ScrapeCreators')
-    baixarTikTokViaScrapeCreators(url, out)
-      .then((erroSc) => {
+    if (ehInstagram) return encerra(code, stderr)
+
+    // O erro que o usuário vê continua sendo o do yt-dlp em qualquer desfecho: é
+    // o que descreve a causa raiz, e trocar por "fs_..."/"sc_..." só esconderia
+    // o motivo real. Os códigos dos fallbacks ficam no log.
+    const tentaPago = () => {
+      if (!SCRAPECREATORS_KEY) return encerra(code, stderr)
+      console.warn('[video-download] tentando ScrapeCreators')
+      baixarTikTokViaScrapeCreators(url, out)
+        .then((erroSc) => {
+          if (desistiu()) return
+          if (!erroSc) {
+            console.warn('[video-download] ScrapeCreators resolveu o que o yt-dlp nao conseguiu')
+            return responde()
+          }
+          console.warn('[video-download] ScrapeCreators tambem falhou:', erroSc)
+          return encerra(code, stderr)
+        })
+        .catch((e) => {
+          if (desistiu()) return
+          console.warn('[video-download] ScrapeCreators estourou:', String((e && e.message) || e).slice(0, 200))
+          return encerra(code, stderr)
+        })
+    }
+
+    console.warn('[video-download] yt-dlp esgotou, tentando FlareSolverr (caminho proprio)')
+    baixarTikTokViaFlareSolverr(url, out)
+      .then((erroFs) => {
         if (desistiu()) return
-        if (!erroSc) {
-          console.warn('[video-download] ScrapeCreators resolveu o que o yt-dlp nao conseguiu')
+        if (!erroFs) {
+          console.warn('[video-download] FlareSolverr resolveu o que o yt-dlp nao conseguiu')
           return responde()
         }
-        console.warn('[video-download] ScrapeCreators tambem falhou:', erroSc)
-        // O erro que o usuário vê continua sendo o do yt-dlp: é o que descreve
-        // a causa raiz, e trocar por "sc_..." só esconderia o motivo real.
-        return encerra(code, stderr)
+        console.warn('[video-download] FlareSolverr falhou:', erroFs)
+        // Carrossel de fotos é resposta final, não falha de caminho: o pago
+        // devolveria o mesmo mp3 com nome de vídeo, gastando crédito à toa.
+        if (erroFs === 'fs_photo_mode') {
+          cleanup()
+          return fim(() => res.status(422).json({ success: false, code: 'photo_mode', message: 'Esse link é um carrossel de fotos, não tem vídeo para baixar.' }))
+        }
+        return tentaPago()
       })
       .catch((e) => {
         if (desistiu()) return
-        console.warn('[video-download] ScrapeCreators estourou:', String((e && e.message) || e).slice(0, 200))
-        return encerra(code, stderr)
+        console.warn('[video-download] FlareSolverr estourou:', String((e && e.message) || e).slice(0, 200))
+        return tentaPago()
       })
   }
 
