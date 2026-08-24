@@ -749,7 +749,11 @@ function nomeArquivoVideo (url) {
 // cópia local em vez de duas idas ao TikTok. Meia hora é curto de propósito: é
 // tempo de sessão de trabalho, não de arquivo velho servido para outra pessoa.
 const DL_CACHE_TTL_MS = 30 * 60 * 1000
-const DL_CACHE_MAX = 30
+const DL_CACHE_MAX = 20
+// Vídeo grande é raro e é justamente o que encheria o disco: 20 arquivos de
+// 250 MB seriam 5 GB parados no /tmp para servir uma repetição que talvez não
+// venha. Acima disso, o segundo pedido baixa de novo.
+const DL_CACHE_MAX_BYTES = 60 * 1024 * 1024
 const dlCache = new Map() // chave -> { caminho, quando }
 
 function chaveDeCache (url) {
@@ -774,6 +778,9 @@ function doCacheDeDownload (chave) {
 }
 
 function guardaNoCacheDeDownload (chave, origem) {
+  try {
+    if (statSync(origem).size > DL_CACHE_MAX_BYTES) return
+  } catch { return /* sumiu entre a entrega e aqui */ }
   const destino = `/tmp/dlcache_${chave}.mp4`
   // Grava fora do lugar e só depois renomeia: dois downloads do MESMO vídeo em
   // paralelo escreveriam no mesmo caminho, e um terceiro pedido no meio disso
