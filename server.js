@@ -615,6 +615,22 @@ async function baixarTikTokViaFlareSolverr (url, destino) {
 
   if (!candidatas || !candidatas.length) return 'fs_sem_dados'
 
+  return baixaPrimeiraCandidataBoa(candidatas, cabecalhos, destino, 'flaresolverr')
+}
+
+/**
+ * Percorre as candidatas até uma virar arquivo bom no disco. Devolve null no
+ * sucesso, ou um código de erro.
+ *
+ * Vive fora dos dois extratores porque os dois entregam a MESMA coisa (uma
+ * lista de endereços do CDN e os cabeçalhos que ele aceita) e precisam das
+ * mesmas recusas: página de erro disfarçada de 200, faixa muda, arquivo grande
+ * demais. Duas cópias disso divergiriam na primeira manutenção.
+ *
+ * `marca` só rotula o log: saber por qual caminho o arquivo veio é metade do
+ * diagnóstico quando o TikTok muda de novo.
+ */
+async function baixaPrimeiraCandidataBoa (candidatas, cabecalhos, destino, marca) {
   // O motivo de cada recusa vai para o log: quando isso aqui falhar de novo (e
   // vai, o TikTok muda), a diferença entre "o CDN negou" e "veio sem áudio" é o
   // que separa cinco minutos de diagnóstico de uma tarde.
@@ -625,11 +641,11 @@ async function baixarTikTokViaFlareSolverr (url, destino) {
     const onde = `candidata ${n}/${candidatas.length}`
     try {
       const r = await fetch(candidata, { headers: cabecalhos, signal: AbortSignal.timeout(FS_DOWNLOAD_TIMEOUT_MS) })
-      if (!r.ok) { console.warn(`[flaresolverr] ${onde}: HTTP ${r.status}`); continue }
+      if (!r.ok) { console.warn(`[${marca}] ${onde}: HTTP ${r.status}`); continue }
       const buf = Buffer.from(await r.arrayBuffer())
       // Página de erro do CDN também chega com 200: um mp4 de verdade não tem
       // 50 KB, e deixar passar viraria "arquivo quebrado" lá na frente.
-      if (buf.length < 50000) { console.warn(`[flaresolverr] ${onde}: corpo de ${buf.length} bytes, nao e video`); continue }
+      if (buf.length < 50000) { console.warn(`[${marca}] ${onde}: corpo de ${buf.length} bytes, nao e video`); continue }
       if (buf.length > SC_MAX_BYTES) return 'too_large'
       writeFileSync(destino, buf)
       // A faixa escolhida pode vir MUDA (aconteceu com os formatos "1080p" do
@@ -638,18 +654,66 @@ async function baixarTikTokViaFlareSolverr (url, destino) {
       // áudio, tenta a próxima candidata em vez de entregar vídeo sem som.
       const { video: cv, audio: ca } = await codecsDoArquivo(destino)
       if (cv && ca) {
-        console.warn(`[flaresolverr] ${onde}: ok, ${buf.length} bytes (${cv}+${ca})`)
+        console.warn(`[${marca}] ${onde}: ok, ${buf.length} bytes (${cv}+${ca})`)
         return null
       }
-      console.warn(`[flaresolverr] ${onde}: recusada por codec (video=${cv || '-'}, audio=${ca || '-'})`)
+      console.warn(`[${marca}] ${onde}: recusada por codec (video=${cv || '-'}, audio=${ca || '-'})`)
       ultimoErro = ca && !cv ? 'fs_photo_mode' : 'fs_sem_audio'
       try { unlinkSync(destino) } catch { /* já removido */ }
     } catch (e) {
       // Próxima candidata: a lista traz o mesmo arquivo em CDNs diferentes.
-      console.warn(`[flaresolverr] ${onde}: ${String((e && e.message) || e).slice(0, 120)}`)
+      console.warn(`[${marca}] ${onde}: ${String((e && e.message) || e).slice(0, 120)}`)
     }
   }
   return ultimoErro
+}
+
+// ── Caminho mais curto do TikTok: o embed sem navegador (24/08/2026) ────────
+// O que o FlareSolverr traz de volta na página de embed, um GET comum traz
+// igual: medido hoje da própria VPS, `GET /embed/v2/<id>` com User-Agent de
+// navegador responde 200 com os 317 KB de JSON em ~0,6s, sem cookie nenhum, e o
+// CDN entrega o mp4 só com esse mesmo User-Agent e o Referer do tiktok.com.
+//
+// A diferença é o tempo: abrir um navegador de verdade custa 3 a 5s por vídeo, e
+// como o FlareSolverr atende um pedido por vez, dois downloads simultâneos já
+// fizeram um deles levar 19s (medido hoje, com tráfego real na máquina).
+//
+// A qualidade é a mesma: tanto o embed quanto a página do vídeo acabam
+// entregando h264 576x1024 — as faixas 1080p do TikTok são h265 e vêm mudas,
+// então já eram recusadas nos dois caminhos.
+//
+// O FlareSolverr fica logo atrás. Esta porta aqui é a que o Akamai fecha
+// primeiro quando aperta (foi o que aconteceu com a página canônica em 15/08), e
+// nesse dia o navegador de verdade volta a ser necessário sem ninguém precisar
+// fazer deploy.
+const TK_EMBED_TIMEOUT_MS = 20000
+
+async function baixarTikTokViaEmbedDireto (url, destino) {
+  const idVideo = idDoVideoTikTok(url) || await idPeloEncurtador(url)
+  if (!idVideo) return 'ed_sem_id'
+
+  let html = ''
+  try {
+    const r = await fetch(`https://www.tiktok.com/embed/v2/${idVideo}`, {
+      headers: { 'User-Agent': YTDLP_UA, 'Accept-Language': 'pt-BR,pt;q=0.9' },
+      signal: AbortSignal.timeout(TK_EMBED_TIMEOUT_MS),
+    })
+    if (!r.ok) return 'ed_http_' + r.status
+    html = await r.text()
+  } catch (e) {
+    return 'ed_' + String((e && e.name) || 'falhou').toLowerCase()
+  }
+
+  const achado = candidatasDoEmbed(html)
+  if (achado && achado.photo) return 'fs_photo_mode'
+  if (!achado || !achado.urls.length) return 'ed_sem_dados'
+
+  return baixaPrimeiraCandidataBoa(
+    achado.urls,
+    { 'User-Agent': YTDLP_UA, Referer: 'https://www.tiktok.com/' },
+    destino,
+    'embed',
+  )
 }
 
 // GET /api/tiktok/health — versão do yt-dlp instalada (diagnóstico).
@@ -1062,32 +1126,42 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   const comecaPeloCaminhoProprio = !ehInstagram && process.env.TIKTOK_YTDLP_PRIMEIRO !== '1'
 
   const caminhoProprio = (aoFalhar) => {
-    console.warn('[video-download] TikTok: tentando o FlareSolverr (caminho proprio)')
-    const depois = (motivo) => {
-      console.warn('[video-download] FlareSolverr nao resolveu (' + motivo + ')')
-      cleanup() // sobra de tentativa parcial não engana quem vem depois
-      aoFalhar()
+    // Carrossel de fotos é resposta final, não falha de caminho: nem o yt-dlp
+    // nem o pago têm vídeo para entregar, os dois devolveriam o mesmo mp3 com
+    // nome de .mp4 — e o pago ainda gastaria crédito.
+    const respondeFoto = () => {
+      cleanup()
+      return fim(() => res.status(422).json({ success: false, code: 'photo_mode', message: 'Esse link é um carrossel de fotos, não tem vídeo para baixar.' }))
     }
-    baixarTikTokViaFlareSolverr(url, out)
-      .then((erroFs) => {
-        if (desistiu()) return
-        if (!erroFs) {
-          console.warn('[video-download] FlareSolverr entregou')
-          return responde()
-        }
-        // Carrossel de fotos é resposta final, não falha de caminho: nem o
-        // yt-dlp nem o pago têm vídeo para entregar, os dois devolveriam o mesmo
-        // mp3 com nome de .mp4 — e o pago ainda gastaria crédito.
-        if (erroFs === 'fs_photo_mode') {
+
+    // Dois caminhos próprios, do mais barato para o mais caro: o embed por GET
+    // comum (~1s) e, se ele for fechado, o navegador de verdade (3 a 5s, mais a
+    // fila quando há downloads simultâneos).
+    const tenta = (nome, baixa, proximo) => {
+      console.warn('[video-download] TikTok: tentando ' + nome)
+      baixa(url, out)
+        .then((erro) => {
+          if (desistiu()) return
+          if (!erro) {
+            console.warn('[video-download] ' + nome + ' entregou')
+            return responde()
+          }
+          if (erro === 'fs_photo_mode') return respondeFoto()
+          console.warn('[video-download] ' + nome + ' nao resolveu (' + erro + ')')
+          cleanup() // sobra de tentativa parcial não engana quem vem depois
+          return proximo()
+        })
+        .catch((e) => {
+          if (desistiu()) return
+          console.warn('[video-download] ' + nome + ' estourou:', String((e && e.message) || e).slice(0, 120))
           cleanup()
-          return fim(() => res.status(422).json({ success: false, code: 'photo_mode', message: 'Esse link é um carrossel de fotos, não tem vídeo para baixar.' }))
-        }
-        return depois(erroFs)
-      })
-      .catch((e) => {
-        if (desistiu()) return
-        return depois(String((e && e.message) || e).slice(0, 120))
-      })
+          return proximo()
+        })
+    }
+
+    tenta('o embed direto', baixarTikTokViaEmbedDireto, () => {
+      tenta('o FlareSolverr', baixarTikTokViaFlareSolverr, aoFalhar)
+    })
   }
 
   const comeca = () => {
