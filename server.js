@@ -1,8 +1,8 @@
 import express from 'express'
 import cors from 'cors'
 import { execFileSync, execFile } from 'child_process'
-import { createHmac } from 'crypto'
-import { readFileSync, writeFileSync, existsSync, statSync, createReadStream, unlinkSync, renameSync } from 'fs'
+import { createHmac, createHash } from 'crypto'
+import { readFileSync, writeFileSync, existsSync, statSync, createReadStream, unlinkSync, renameSync, copyFile } from 'fs'
 import { Resend } from 'resend'
 import cron from 'node-cron'
 import swaggerJsdoc from 'swagger-jsdoc'
@@ -556,6 +556,20 @@ async function baixarTikTokViaFlareSolverr (url, destino) {
   let candidatas = null
   let idVideo = idDoVideoTikTok(url)
 
+  // A URL canônica já traz o ID, e ela é RECUSADA pelo Akamai mesmo dentro do
+  // navegador: volta a "Site Maintenance" de ~520 bytes, sempre (medido 17/08
+  // em 5 tentativas e de novo em 24/08, 520 e 521 bytes). Quando o link colado
+  // já é canônico, tentar a página duas vezes é gastar ~3s para ouvir o mesmo
+  // não duas vezes, então o embed vira o primeiro caminho em vez do último.
+  // Links curtos (vt./vm.) seguem tentando a página: neles ela funciona, é lá
+  // que mora o 1080p, e a casca vazia é intermitente.
+  // Se o bloqueio cair um dia, FS_TENTA_PAGINA_CANONICA=1 devolve a tentativa.
+  const tentaPagina = !idVideo || process.env.FS_TENTA_PAGINA_CANONICA === '1'
+  // O ID pelo encurtador só era buscado DEPOIS das tentativas de página, em
+  // série. Como ele é uma requisição de redirect (rápida) e é o que destrava o
+  // embed, ele sai na frente e espera junto.
+  const idEmParalelo = idVideo ? null : idPeloEncurtador(url)
+
   const cabecalhosDe = (solucao) => {
     // O CDN do TikTok recusa quem não parece navegador: precisa do MESMO
     // User-Agent que abriu a página, do Referer do tiktok.com e dos cookies da
@@ -570,7 +584,7 @@ async function baixarTikTokViaFlareSolverr (url, destino) {
   // o MESMO link alternou entre 619 KB (com dados) e 46-70 KB (sem), e a segunda
   // rodada de tentativas passou 3/3. É a mesma intermitência de sempre do
   // TikTok, então repetir vale mais que desistir.
-  for (let tentativa = 1; tentativa <= 2 && !candidatas; tentativa++) {
+  for (let tentativa = 1; tentaPagina && tentativa <= 2 && !candidatas; tentativa++) {
     const solucao = await abrePaginaNoFlareSolverr(url)
     if (!solucao) { console.warn('[flaresolverr] pagina nao abriu (tentativa ' + tentativa + ')'); continue }
     idVideo = idVideo || idDoVideoTikTok(solucao.url)
@@ -584,7 +598,7 @@ async function baixarTikTokViaFlareSolverr (url, destino) {
     }
   }
 
-  if (!candidatas && !idVideo) idVideo = await idPeloEncurtador(url)
+  if (!candidatas && !idVideo && idEmParalelo) idVideo = await idEmParalelo
 
   if (!candidatas && idVideo) {
     console.warn('[flaresolverr] caindo para o embed do video ' + idVideo)
@@ -660,6 +674,68 @@ function nomeArquivoVideo (url) {
   return `video-${Date.now()}.mp4`
 }
 
+// ── Cache curto do arquivo pronto (24/08/2026) ──────────────────────────────
+// O mesmo link volta com frequência: a pessoa baixa, confere, baixa de novo; o
+// lote traz links repetidos; e o chat importa justamente o vídeo que ela acabou
+// de baixar na tela. Nos logs de 24/08 o mesmo id apareceu 4 vezes no dia, cada
+// uma pagando os ~20s inteiros.
+//
+// O que é guardado é o arquivo JÁ PRONTO para entrega (formato escolhido,
+// ffprobe feito, transcode aplicado se precisou), então a segunda vez custa uma
+// cópia local em vez de duas idas ao TikTok. Meia hora é curto de propósito: é
+// tempo de sessão de trabalho, não de arquivo velho servido para outra pessoa.
+const DL_CACHE_TTL_MS = 30 * 60 * 1000
+const DL_CACHE_MAX = 30
+const dlCache = new Map() // chave -> { caminho, quando }
+
+function chaveDeCache (url) {
+  const id = idDoVideoTikTok(url)
+  if (id) return 'tk_' + id
+  const ig = String(url).match(/instagram\.com\/(?:reels?|p|tv)\/([A-Za-z0-9_-]{5,})/i)
+  if (ig) return 'ig_' + ig[1]
+  // Link curto (vt./vm.) não traz o id: a própria URL, sem query, serve.
+  return 'u_' + createHash('sha1').update(String(url).split('?')[0]).digest('hex').slice(0, 16)
+}
+
+function doCacheDeDownload (chave) {
+  const item = dlCache.get(chave)
+  if (!item) return null
+  // O /tmp é do sistema: se a limpeza dele levou o arquivo, o registro mente.
+  if (Date.now() - item.quando > DL_CACHE_TTL_MS || !existsSync(item.caminho)) {
+    dlCache.delete(chave)
+    try { unlinkSync(item.caminho) } catch { /* já não existe */ }
+    return null
+  }
+  return item.caminho
+}
+
+function guardaNoCacheDeDownload (chave, origem) {
+  const destino = `/tmp/dlcache_${chave}.mp4`
+  // Grava fora do lugar e só depois renomeia: dois downloads do MESMO vídeo em
+  // paralelo escreveriam no mesmo caminho, e um terceiro pedido no meio disso
+  // levaria arquivo pela metade. O rename é atômico, a cópia direta não é.
+  const parcial = `${destino}.${Math.floor(Math.random() * 1e6)}.tmp`
+  // Cópia assíncrona e sem espera: o usuário já está recebendo o arquivo, e uma
+  // falha aqui só custa o próximo download ser normal.
+  copyFile(origem, parcial, (err) => {
+    if (err) { try { unlinkSync(parcial) } catch { /* nem chegou a existir */ } return }
+    try { renameSync(parcial, destino) } catch { try { unlinkSync(parcial) } catch { /* já foi */ } return }
+    dlCache.set(chave, { caminho: destino, quando: Date.now() })
+    const agora = Date.now()
+    for (const [k, v] of [...dlCache]) {
+      if (agora - v.quando > DL_CACHE_TTL_MS) {
+        dlCache.delete(k)
+        try { unlinkSync(v.caminho) } catch { /* já não existe */ }
+      }
+    }
+    while (dlCache.size > DL_CACHE_MAX) {
+      const [k, v] = [...dlCache].sort((a, b) => a[1].quando - b[1].quando)[0]
+      dlCache.delete(k)
+      try { unlinkSync(v.caminho) } catch { /* já não existe */ }
+    }
+  })
+}
+
 // Núcleo compartilhado: baixa com yt-dlp (retry via proxy residencial BR) e
 // STREAMA o arquivo na resposta. `onFim` roda ao terminar (sucesso ou falha)
 // — usado pelo rate limit de concorrência da rota pública.
@@ -669,6 +745,8 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   const t0 = Date.now()
   const out = `/tmp/dlfetch_${Date.now()}_${Math.floor(Math.random() * 1e6)}.mp4`
   const cleanup = () => { try { unlinkSync(out) } catch { /* já removido */ } }
+  const chaveCache = chaveDeCache(url)
+  let veioDoCache = false
 
   // `onFim` é quem devolve a vaga de "um download por vez" desse visitante, e
   // ele PRECISA rodar em todo caminho de saída — inclusive quando o cliente
@@ -860,6 +938,8 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   }
 
   const enviaArquivo = () => {
+    // Guarda para o próximo pedido do mesmo link (não regrava o que veio dele).
+    if (!veioDoCache) guardaNoCacheDeDownload(chaveCache, out)
     let size
     try {
       size = statSync(out).size
@@ -902,99 +982,139 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   const definitivo = (code) => code === 'ytdlp_missing' || code === 'not_found' || code === 'too_large'
 
   /**
-   * Últimas cartadas antes de devolver erro, nesta ordem: o FlareSolverr desta
-   * máquina e, só se ele falhar, o ScrapeCreators. Ambas só para TikTok, porque
-   * o Instagram continua baixando normalmente pelo yt-dlp.
+   * Rede paga, só para TikTok e só depois de tudo mais falhar: cada chamada
+   * consome crédito (em 17/08 o crédito acabou e derrubou o baixador inteiro).
    *
-   * A ordem é a diferença entre um produto que depende de saldo e um que não
-   * depende: o FlareSolverr já está de pé aqui e não cobra por vídeo, enquanto
-   * cada chamada ao ScrapeCreators consome crédito (e em 17/08 o crédito acabou,
-   * derrubando o baixador inteiro).
-   *
-   * O sucesso cai no MESMO `responde()` das tentativas normais, de propósito: é
-   * ele que roda o ffprobe, pega carrossel de fotos, recodifica o que os players
-   * não abrem e devolve o arquivo. Um caminho de entrega paralelo aqui seria uma
-   * segunda implementação das mesmas regras, fadada a divergir.
+   * O erro que o usuário vê continua sendo o do yt-dlp em qualquer desfecho: é
+   * o que descreve a causa raiz, e trocar por "fs_..."/"sc_..." só esconderia
+   * o motivo real. Os códigos dos fallbacks ficam no log.
    */
-  const desisteOuFallback = (code, stderr) => {
-    if (ehInstagram) return encerra(code, stderr)
+  const tentaPago = (code, stderr) => {
+    if (ehInstagram || !SCRAPECREATORS_KEY) return encerra(code, stderr)
+    console.warn('[video-download] tentando ScrapeCreators')
+    baixarTikTokViaScrapeCreators(url, out)
+      .then((erroSc) => {
+        if (desistiu()) return
+        if (!erroSc) {
+          console.warn('[video-download] ScrapeCreators resolveu o que o yt-dlp nao conseguiu')
+          return responde()
+        }
+        console.warn('[video-download] ScrapeCreators tambem falhou:', erroSc)
+        return encerra(code, stderr)
+      })
+      .catch((e) => {
+        if (desistiu()) return
+        console.warn('[video-download] ScrapeCreators estourou:', String((e && e.message) || e).slice(0, 200))
+        return encerra(code, stderr)
+      })
+  }
 
-    // O erro que o usuário vê continua sendo o do yt-dlp em qualquer desfecho: é
-    // o que descreve a causa raiz, e trocar por "fs_..."/"sc_..." só esconderia
-    // o motivo real. Os códigos dos fallbacks ficam no log.
-    const tentaPago = () => {
-      if (!SCRAPECREATORS_KEY) return encerra(code, stderr)
-      console.warn('[video-download] tentando ScrapeCreators')
-      baixarTikTokViaScrapeCreators(url, out)
-        .then((erroSc) => {
+  // As três tentativas do yt-dlp. `aoEsgotar(code, stderr)` decide o que vem
+  // depois — mudou de dono em 24/08: antes era sempre o fim da linha, agora
+  // para TikTok ela é que virou o plano B.
+  const cadeiaYtdlp = (aoEsgotar) => {
+    roda(null, (err, _stdout, stderr) => {
+      if (desistiu()) return
+      if (!err) return responde()
+      const code1 = classify(err, stderr)
+      if (definitivo(code1)) return encerra(code1, stderr)
+      console.warn('[video-download] 1a tentativa falhou (' + code1 + '), repetindo direto', String(stderr || '').slice(0, 300))
+
+      roda(null, (err2, _stdout2, stderr2) => {
+        if (desistiu()) return
+        if (!err2) return responde()
+        const code2 = classify(err2, stderr2)
+        if (definitivo(code2)) return encerra(code2, stderr2)
+
+        const proxy = getNextProxy('br')
+        if (!proxy) {
+          console.warn('[video-download] 2 tentativas diretas falharam e nao ha proxy', code2)
+          return aoEsgotar(code2, stderr2)
+        }
+        console.warn('[video-download] 2a tentativa falhou (' + code2 + '), ultima via proxy residencial')
+
+        roda(proxy, (err3, _stdout3, stderr3) => {
           if (desistiu()) return
-          if (!erroSc) {
-            console.warn('[video-download] ScrapeCreators resolveu o que o yt-dlp nao conseguiu')
-            return responde()
-          }
-          console.warn('[video-download] ScrapeCreators tambem falhou:', erroSc)
-          return encerra(code, stderr)
+          if (!err3) return responde()
+          const code3 = classify(err3, stderr3)
+          console.warn('[video-download] falha nas 3 tentativas', code3, String(stderr3 || '').slice(0, 300))
+          return aoEsgotar(code3, stderr3)
         })
-        .catch((e) => {
-          if (desistiu()) return
-          console.warn('[video-download] ScrapeCreators estourou:', String((e && e.message) || e).slice(0, 200))
-          return encerra(code, stderr)
-        })
+      })
+    })
+  }
+
+  /**
+   * TikTok começa pelo caminho próprio (FlareSolverr), e não pelo yt-dlp.
+   *
+   * Por quê (medido em 24/08/2026, com os logs de produção do dia): o extractor
+   * de TikTok do yt-dlp falha em 100% dos links desde 15/08 — "Unexpected
+   * response from webpage request" —, mas ele continuava sendo o primeiro da
+   * fila. Resultado: TODO download começava com ~14s de três tentativas
+   * condenadas (2 diretas de ~3s e uma via proxy residencial de ~10s) antes de
+   * chegar em quem resolve. Numa chamada real de 20,3s, 14s eram esses.
+   *
+   * A troca não abandona o yt-dlp: ele fica logo atrás, então no dia em que o
+   * upstream consertar o TikTok o caminho volta a funcionar sozinho, e o
+   * Instagram (onde ele nunca quebrou) segue começando por ele.
+   * TIKTOK_YTDLP_PRIMEIRO=1 restaura a ordem antiga sem deploy.
+   */
+  const comecaPeloCaminhoProprio = !ehInstagram && process.env.TIKTOK_YTDLP_PRIMEIRO !== '1'
+
+  const caminhoProprio = (aoFalhar) => {
+    console.warn('[video-download] TikTok: tentando o FlareSolverr (caminho proprio)')
+    const depois = (motivo) => {
+      console.warn('[video-download] FlareSolverr nao resolveu (' + motivo + ')')
+      cleanup() // sobra de tentativa parcial não engana quem vem depois
+      aoFalhar()
     }
-
-    console.warn('[video-download] yt-dlp esgotou, tentando FlareSolverr (caminho proprio)')
     baixarTikTokViaFlareSolverr(url, out)
       .then((erroFs) => {
         if (desistiu()) return
         if (!erroFs) {
-          console.warn('[video-download] FlareSolverr resolveu o que o yt-dlp nao conseguiu')
+          console.warn('[video-download] FlareSolverr entregou')
           return responde()
         }
-        console.warn('[video-download] FlareSolverr falhou:', erroFs)
-        // Carrossel de fotos é resposta final, não falha de caminho: o pago
-        // devolveria o mesmo mp3 com nome de vídeo, gastando crédito à toa.
+        // Carrossel de fotos é resposta final, não falha de caminho: nem o
+        // yt-dlp nem o pago têm vídeo para entregar, os dois devolveriam o mesmo
+        // mp3 com nome de .mp4 — e o pago ainda gastaria crédito.
         if (erroFs === 'fs_photo_mode') {
           cleanup()
           return fim(() => res.status(422).json({ success: false, code: 'photo_mode', message: 'Esse link é um carrossel de fotos, não tem vídeo para baixar.' }))
         }
-        return tentaPago()
+        return depois(erroFs)
       })
       .catch((e) => {
         if (desistiu()) return
-        console.warn('[video-download] FlareSolverr estourou:', String((e && e.message) || e).slice(0, 200))
-        return tentaPago()
+        return depois(String((e && e.message) || e).slice(0, 120))
       })
   }
 
-  roda(null, (err, _stdout, stderr) => {
-    if (desistiu()) return
-    if (!err) return responde()
-    const code1 = classify(err, stderr)
-    if (definitivo(code1)) return encerra(code1, stderr)
-    console.warn('[video-download] 1a tentativa falhou (' + code1 + '), repetindo direto', String(stderr || '').slice(0, 300))
+  const comeca = () => {
+    if (comecaPeloCaminhoProprio) return caminhoProprio(() => cadeiaYtdlp(tentaPago))
+    if (ehInstagram) return cadeiaYtdlp(encerra)
+    // Ordem antiga (TIKTOK_YTDLP_PRIMEIRO=1): yt-dlp, caminho próprio, pago.
+    return cadeiaYtdlp((code, stderr) => caminhoProprio(() => tentaPago(code, stderr)))
+  }
 
-    roda(null, (err2, _stdout2, stderr2) => {
+  // Mesmo vídeo pedido de novo dentro da janela: entrega a cópia local e pula o
+  // caminho inteiro. Se a cópia falhar, o download normal acontece como sempre.
+  const jaBaixado = doCacheDeDownload(chaveCache)
+  if (jaBaixado) {
+    copyFile(jaBaixado, out, (errCopia) => {
       if (desistiu()) return
-      if (!err2) return responde()
-      const code2 = classify(err2, stderr2)
-      if (definitivo(code2)) return encerra(code2, stderr2)
-
-      const proxy = getNextProxy('br')
-      if (!proxy) {
-        console.warn('[video-download] 2 tentativas diretas falharam e nao ha proxy', code2)
-        return desisteOuFallback(code2, stderr2)
+      if (errCopia) {
+        console.warn('[video-download] copia do cache falhou, baixando de novo')
+        return comeca()
       }
-      console.warn('[video-download] 2a tentativa falhou (' + code2 + '), ultima via proxy residencial')
-
-      roda(proxy, (err3, _stdout3, stderr3) => {
-        if (desistiu()) return
-        if (!err3) return responde()
-        const code3 = classify(err3, stderr3)
-        console.warn('[video-download] falha nas 3 tentativas', code3, String(stderr3 || '').slice(0, 300))
-        return desisteOuFallback(code3, stderr3)
-      })
+      veioDoCache = true
+      console.warn('[video-download] entregue do cache local (' + chaveCache + ')')
+      enviaArquivo()
     })
-  })
+    return
+  }
+
+  comeca()
 }
 
 // Rota ADMIN (usada pela edge import-tiktok-video do chat). Aceita TikTok e
