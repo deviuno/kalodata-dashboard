@@ -330,10 +330,10 @@ const SC_TIMEOUT_MS = 60000
  * Baixa o mp4 do TikTok pelo ScrapeCreators e grava em `destino`.
  * Devolve null quando deu certo, ou um código de erro para o chamador registrar.
  *
- * A ordem das fontes é deliberada: `play_addr` primeiro porque é a que vem sem
- * marca d'água; `play_addr_h264` como igual dela em codec garantido; e o
- * `download_addr` por último, SÓ porque um arquivo com marca d'água ainda é
- * melhor que nenhum arquivo (a etapa de edição consegue cortá-la, um erro não).
+ * Só as fontes SEM marca d'água entram: `play_addr` (a que o app reproduz) e
+ * `play_addr_h264` (a mesma coisa, com o codec garantido). O `download_addr`
+ * ficou de fora em 31/08/2026 — ele é o arquivo do botão de download do app, e
+ * chega com o logo do TikTok e o @ do autor queimados no quadro.
  */
 async function baixarTikTokViaScrapeCreators (url, destino) {
   if (!SCRAPECREATORS_KEY) return 'sc_sem_chave'
@@ -353,7 +353,7 @@ async function baixarTikTokViaScrapeCreators (url, destino) {
   if (!video) return 'sc_sem_video'
 
   const candidatas = []
-  for (const campo of ['play_addr', 'play_addr_h264', 'download_addr']) {
+  for (const campo of ['play_addr', 'play_addr_h264']) {
     const lista = (video[campo] && video[campo].url_list) || []
     for (const u of lista) if (typeof u === 'string' && u) candidatas.push(u)
   }
@@ -479,14 +479,33 @@ function candidatasDaPagina (html) {
       if (typeof u === 'string' && u) urls.push(u)
     }
   }
-  for (const u of [video.playAddr, video.downloadAddr]) {
-    if (typeof u === 'string' && u) urls.push(u)
-  }
+  // `playAddr` sim, `downloadAddr` NUNCA. O segundo é o arquivo do botão
+  // "Salvar vídeo" do app e vem com a marca d'água QUEIMADA na imagem: logo do
+  // TikTok, @ do autor e, nos vídeos de TikTok Shop, a faixa "Unauthorised
+  // commercial use of video strictly prohibited". Ele era a última candidata
+  // "porque arquivo com marca ainda é melhor que erro" — não é: quem baixa aqui
+  // baixa para editar e publicar, e a marca inviabiliza o uso. Erro é resposta
+  // melhor do que vídeo marcado.
+  if (typeof video.playAddr === 'string' && video.playAddr) urls.push(video.playAddr)
   return urls.length ? { photo: false, urls } : null
 }
 
 /**
- * Candidatas da página de EMBED (`/embed/v2/<id>`), que é a rede de segurança.
+ * Candidatas da página de EMBED (`/embed/v2/<id>`).
+ *
+ * ATENÇÃO (31/08/2026): o embed entrega SÓ o stream COM MARCA D'ÁGUA. Medido
+ * hoje em 4 vídeos, um deles o que o cliente reclamou: a única URL de vídeo do
+ * payload (`itemInfos.video.urls`, e as duas cópias dela no `<video src>` da
+ * página) aponta para o bucket `tos-*-ve-*`, e o frame extraído mostra o logo
+ * do TikTok, o @ do autor e, em vídeo de TikTok Shop, a faixa "Unauthorised
+ * commercial use of video strictly prohibited". Não há no embed nenhuma outra
+ * URL de vídeo para escolher — a `tos-alisg-v-*` que aparece no HTML é a trilha
+ * sonora. Ou seja, este caminho NÃO tem conserto por parsing.
+ *
+ * Foi ele que virou o primeiro da fila em 24/08 (commit `cd9ace2`), quando a
+ * comparação entre os caminhos olhou codec e resolução e não olhou o quadro.
+ * Desde então todo download de TikTok saía marcado. Agora ele só entra com
+ * TIKTOK_ACEITA_MARCA_DAGUA=1, para o dia em que sobrar ele ou nada.
  *
  * Ela existe porque a URL canônica (`tiktok.com/@user/video/<id>`) é RECUSADA
  * pelo Akamai mesmo no navegador: devolve a página "Site Maintenance" de 520
@@ -600,7 +619,9 @@ async function baixarTikTokViaFlareSolverr (url, destino) {
 
   if (!candidatas && !idVideo && idEmParalelo) idVideo = await idEmParalelo
 
-  if (!candidatas && idVideo) {
+  // A queda para o embed leva junto a marca d'água (ver `candidatasDoEmbed`),
+  // então ela também ficou atrás da chave.
+  if (!candidatas && idVideo && ACEITA_MARCA_DAGUA) {
     console.warn('[flaresolverr] caindo para o embed do video ' + idVideo)
     const solucao = await abrePaginaNoFlareSolverr(`https://www.tiktok.com/embed/v2/${idVideo}`)
     if (solucao) {
@@ -668,6 +689,72 @@ async function baixaPrimeiraCandidataBoa (candidatas, cabecalhos, destino, marca
   return ultimoErro
 }
 
+// ── Caminho principal do TikTok: a própria página, sem navegador (31/08/2026)
+// O embed era o caminho mais curto, mas só serve o arquivo marcado (ver
+// `candidatasDoEmbed`). A página do vídeo serve o stream de reprodução, o
+// limpo, e o achado de hoje é que ela também responde a um GET COMUM: com o
+// `YTDLP_UA` e os parâmetros de compartilhamento (`is_from_webapp=1&
+// sender_device=pc`) ela volta hidratada, com o bloco
+// __UNIVERSAL_DATA_FOR_REHYDRATION__ inteiro, em ~0,6s e sem cookie nenhum.
+//
+// O que muda em relação a 17/08, quando "a página canônica é sempre recusada":
+// aquilo vale para o FlareSolverr, e continua valendo (reconferido hoje, 521
+// bytes de "Site Maintenance"). O navegador de verdade é que é barrado; o GET
+// simples passa. Não confundir os dois casos.
+//
+// Em compensação a página é uma ROLETA: o mesmo link volta ora hidratado
+// (~420 KB), ora como casca vazia (~44 KB). Por isso a tentativa é repetida —
+// cada rodada custa menos de um segundo, e medido em 6 vídeos distintos foram
+// 5 resolvidos, 4 deles na primeira tentativa. O que a roleta derrubar cai no
+// yt-dlp logo atrás, que lê a MESMA página com outra pilha de TLS.
+//
+// O handle não importa: `@i` funciona igual, então link com handle errado
+// também passa a baixar.
+const TK_PAGINA_TIMEOUT_MS = 20000
+const TK_PAGINA_TENTATIVAS = Math.max(1, Number(process.env.TIKTOK_PAGINA_TENTATIVAS || 6))
+const TK_PAGINA_ESPERA_MS = 400
+
+async function baixarTikTokViaPaginaDireta (url, destino) {
+  const idVideo = idDoVideoTikTok(url) || await idPeloEncurtador(url)
+  if (!idVideo) return 'pg_sem_id'
+  const alvo = `https://www.tiktok.com/@i/video/${idVideo}?is_from_webapp=1&sender_device=pc`
+
+  let achado = null
+  for (let i = 1; i <= TK_PAGINA_TENTATIVAS && !achado; i++) {
+    let html = ''
+    try {
+      const r = await fetch(alvo, {
+        headers: { 'User-Agent': YTDLP_UA, 'Accept-Language': 'pt-BR,pt;q=0.9' },
+        signal: AbortSignal.timeout(TK_PAGINA_TIMEOUT_MS),
+      })
+      if (r.ok) html = await r.text()
+      else console.warn(`[pagina] tentativa ${i}: HTTP ${r.status}`)
+    } catch (e) {
+      console.warn(`[pagina] tentativa ${i}: ${String((e && e.message) || e).slice(0, 100)}`)
+    }
+    if (html) {
+      const lido = candidatasDaPagina(html)
+      if (lido && lido.photo) return 'fs_photo_mode'
+      if (lido) achado = lido
+      else console.warn(`[pagina] tentativa ${i}: casca sem os dados do video (${html.length} bytes)`)
+    }
+    if (!achado && i < TK_PAGINA_TENTATIVAS) {
+      await new Promise((pronto) => setTimeout(pronto, TK_PAGINA_ESPERA_MS))
+    }
+  }
+  if (!achado || !achado.urls.length) return 'pg_sem_dados'
+
+  // Sem cookie: a lista de candidatas traz o mesmo arquivo em vários espelhos
+  // do CDN e os primeiros costumam responder 403 — `baixaPrimeiraCandidataBoa`
+  // já percorre até um deles entregar (medido: 2 negados e o 3o baixou).
+  return baixaPrimeiraCandidataBoa(
+    achado.urls,
+    { 'User-Agent': YTDLP_UA, Referer: 'https://www.tiktok.com/' },
+    destino,
+    'pagina',
+  )
+}
+
 // ── Caminho mais curto do TikTok: o embed sem navegador (24/08/2026) ────────
 // O que o FlareSolverr traz de volta na página de embed, um GET comum traz
 // igual: medido hoje da própria VPS, `GET /embed/v2/<id>` com User-Agent de
@@ -686,7 +773,13 @@ async function baixaPrimeiraCandidataBoa (candidatas, cabecalhos, destino, marca
 // primeiro quando aperta (foi o que aconteceu com a página canônica em 15/08), e
 // nesse dia o navegador de verdade volta a ser necessário sem ninguém precisar
 // fazer deploy.
+//
+// DESLIGADO desde 31/08/2026: o que ele entrega é o arquivo com marca d'água.
+// Continua no código porque é o único caminho que nunca falhou por bloqueio, e
+// num dia de emergência TIKTOK_ACEITA_MARCA_DAGUA=1 religa a fila inteira sem
+// deploy. Ligar isso é uma decisão de produto, não de infraestrutura.
 const TK_EMBED_TIMEOUT_MS = 20000
+const ACEITA_MARCA_DAGUA = process.env.TIKTOK_ACEITA_MARCA_DAGUA === '1'
 
 async function baixarTikTokViaEmbedDireto (url, destino) {
   const idVideo = idDoVideoTikTok(url) || await idPeloEncurtador(url)
@@ -891,9 +984,15 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       // ("1", "2", "3", com codec não anunciado) são H.264+AAC muxados, então
       // pra Instagram eles vêm primeiro; VP9/AV1 só como último recurso, e aí
       // o transcode em `responde` conserta.
+      //
+      // O `[format_id!=download]` de toda a cadeia do TikTok é a trava contra a
+      // marca d'água: o extractor expõe um formato chamado `download`, que o
+      // próprio yt-dlp rotula "watermarked" na lista, e ele é h264/mp4 como os
+      // bons — ou seja, casaria com o primeiro filtro num dia em que os outros
+      // sumissem, e o vídeo sairia marcado sem ninguém notar.
       '-f', ehInstagram
         ? 'b[ext=mp4]/b/bv*[vcodec^=avc1]+ba/bv*+ba'
-        : 'b[vcodec^=h264][ext=mp4]/b[acodec!=none][ext=mp4]/b[acodec!=none]/bv*+ba/b',
+        : 'b[vcodec^=h264][ext=mp4][format_id!=download]/b[acodec!=none][ext=mp4][format_id!=download]/b[acodec!=none][format_id!=download]/bv*[format_id!=download]+ba/b[format_id!=download]',
       '--merge-output-format', 'mp4',
       '--max-filesize', '250M',
       '--no-progress',
@@ -1116,23 +1215,24 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   }
 
   /**
-   * TikTok começa pelo caminho próprio (FlareSolverr), e não pelo yt-dlp.
+   * TikTok começa pelo caminho próprio, e não pelo yt-dlp.
    *
    * Por quê (medido em 24/08/2026, com os logs de produção do dia): o extractor
-   * de TikTok do yt-dlp falha em 100% dos links desde 15/08 — "Unexpected
+   * de TikTok do yt-dlp falhava em 100% dos links desde 15/08 — "Unexpected
    * response from webpage request" —, mas ele continuava sendo o primeiro da
    * fila. Resultado: TODO download começava com ~14s de três tentativas
    * condenadas (2 diretas de ~3s e uma via proxy residencial de ~10s) antes de
    * chegar em quem resolve. Numa chamada real de 20,3s, 14s eram esses.
    *
-   * A troca não abandona o yt-dlp: ele fica logo atrás, então no dia em que o
-   * upstream consertar o TikTok o caminho volta a funcionar sozinho, e o
-   * Instagram (onde ele nunca quebrou) segue começando por ele.
+   * Em 31/08 o yt-dlp voltou a funcionar em parte dos links (medido: 2 de 6),
+   * então ele deixou de ser peso morto e virou a segunda perna — logo atrás da
+   * página, que é o mesmo dado por um caminho três vezes mais barato. O
+   * Instagram, onde ele nunca quebrou, segue começando por ele.
    * TIKTOK_YTDLP_PRIMEIRO=1 restaura a ordem antiga sem deploy.
    */
   const comecaPeloCaminhoProprio = !ehInstagram && process.env.TIKTOK_YTDLP_PRIMEIRO !== '1'
 
-  const caminhoProprio = (aoFalhar) => {
+  const caminhoProprio = (passos, aoFalhar) => {
     // Carrossel de fotos é resposta final, não falha de caminho: nem o yt-dlp
     // nem o pago têm vídeo para entregar, os dois devolveriam o mesmo mp3 com
     // nome de .mp4 — e o pago ainda gastaria crédito.
@@ -1141,9 +1241,6 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
       return fim(() => res.status(422).json({ success: false, code: 'photo_mode', message: 'Esse link é um carrossel de fotos, não tem vídeo para baixar.' }))
     }
 
-    // Dois caminhos próprios, do mais barato para o mais caro: o embed por GET
-    // comum (~1s) e, se ele for fechado, o navegador de verdade (3 a 5s, mais a
-    // fila quando há downloads simultâneos).
     const tenta = (nome, baixa, proximo) => {
       console.warn('[video-download] TikTok: tentando ' + nome)
       baixa(url, out)
@@ -1166,16 +1263,35 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
         })
     }
 
-    tenta('o embed direto', baixarTikTokViaEmbedDireto, () => {
-      tenta('o FlareSolverr', baixarTikTokViaFlareSolverr, aoFalhar)
-    })
+    // Roda os caminhos em ordem, caindo para `aoFalhar` quando acabam.
+    const passo = (i) => () => {
+      if (i >= passos.length) return aoFalhar()
+      return tenta(passos[i][0], passos[i][1], passo(i + 1))
+    }
+    return passo(0)()
   }
 
+  // A fila do TikTok, do mais barato para o mais caro, e TODA ela sem marca
+  // d'água. Antes o primeiro era o embed, que é o rápido e é o marcado.
+  //
+  // 1. a página do vídeo por GET comum (~1s, roleta resolvida na repetição)
+  // 2. o yt-dlp (~2s por tentativa; lê a mesma página com outra pilha de TLS,
+  //    então acerta em parte do que a roleta negou)
+  // 3. o FlareSolverr (3 a 5s e um pedido por vez; para link curto, onde a
+  //    página abre no navegador de verdade)
+  // 4. o ScrapeCreators, pago e hoje sem crédito
+  const passosPagina = [['a pagina do video', baixarTikTokViaPaginaDireta]]
+  const passosNavegador = [['o FlareSolverr', baixarTikTokViaFlareSolverr]]
+  if (ACEITA_MARCA_DAGUA) passosNavegador.push(['o embed (COM marca dagua)', baixarTikTokViaEmbedDireto])
+
   const comeca = () => {
-    if (comecaPeloCaminhoProprio) return caminhoProprio(() => cadeiaYtdlp(tentaPago))
     if (ehInstagram) return cadeiaYtdlp(encerra)
-    // Ordem antiga (TIKTOK_YTDLP_PRIMEIRO=1): yt-dlp, caminho próprio, pago.
-    return cadeiaYtdlp((code, stderr) => caminhoProprio(() => tentaPago(code, stderr)))
+    const depoisDoYtdlp = (code, stderr) => caminhoProprio(passosNavegador, () => tentaPago(code, stderr))
+    if (comecaPeloCaminhoProprio) {
+      return caminhoProprio(passosPagina, () => cadeiaYtdlp(depoisDoYtdlp))
+    }
+    // Ordem antiga (TIKTOK_YTDLP_PRIMEIRO=1): yt-dlp, caminhos próprios, pago.
+    return cadeiaYtdlp((code, stderr) => caminhoProprio(passosPagina, () => depoisDoYtdlp(code, stderr)))
   }
 
   // Mesmo vídeo pedido de novo dentro da janela: entrega a cópia local e pula o
