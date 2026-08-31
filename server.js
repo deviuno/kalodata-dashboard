@@ -2232,9 +2232,50 @@ app.get('/api/products', async (req, res) => {
 // ---------------------------------------------------------------------------
 // KaloCDN image proxy (products, videos, creators)
 // ---------------------------------------------------------------------------
+// Uma listagem do painel pede ~80 imagens de uma vez. Ate 31/08/2026 cada uma
+// rodava execFileSync: o event loop parava por ate 15s POR IMAGEM, e a fila
+// inteira ficava refem do curl - inclusive as rotas de listagem, que dividem o
+// mesmo processo. No navegador o efeito era a grade sem miniatura por dezenas
+// de segundos (medido: 5 de 32 imagens visiveis no primeiro paint, e mais de
+// 20s para completar). Agora o curl roda async, com teto de concorrencia e
+// deduplicacao dos pedidos iguais em voo: a mesma imagem pedida por dez abas
+// gasta um curl so.
 const imgCache = new Map()
+const imgInflight = new Map()
+const IMG_MAX_CONCURRENCY = 6
+const imgQueue = []
+let imgRunning = 0
 
-function proxyKaloCDN(cdnPath, cacheKey, res) {
+function imgDrain() {
+  while (imgRunning < IMG_MAX_CONCURRENCY && imgQueue.length > 0) {
+    const { task, resolve, reject } = imgQueue.shift()
+    imgRunning++
+    task().then(resolve, reject).finally(() => {
+      imgRunning--
+      imgDrain()
+    })
+  }
+}
+
+function imgSchedule(task) {
+  return new Promise((resolve, reject) => {
+    imgQueue.push({ task, resolve, reject })
+    imgDrain()
+  })
+}
+
+function fetchKaloImage(cdnPath) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      '/usr/local/bin/curl_chrome116',
+      ['-s', '--max-time', '15', '-L', `https://img.kalocdn.com/${cdnPath}`],
+      { timeout: 20000, encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout) => (err ? reject(err) : resolve(stdout)),
+    )
+  })
+}
+
+async function proxyKaloCDN(cdnPath, cacheKey, res) {
   const cached = imgCache.get(cacheKey)
   if (cached && Date.now() < cached.expiresAt) {
     res.set('Content-Type', 'image/png')
@@ -2243,12 +2284,15 @@ function proxyKaloCDN(cdnPath, cacheKey, res) {
   }
 
   try {
-    const result = execFileSync('/usr/local/bin/curl_chrome116', [
-      '-s', '--max-time', '15', '-L',
-      `https://img.kalocdn.com/${cdnPath}`,
-    ], { timeout: 20000 })
+    let pending = imgInflight.get(cacheKey)
+    if (!pending) {
+      pending = imgSchedule(() => fetchKaloImage(cdnPath))
+        .finally(() => imgInflight.delete(cacheKey))
+      imgInflight.set(cacheKey, pending)
+    }
+    const result = await pending
 
-    if (result.length < 100) return res.status(404).send('Image not found')
+    if (!result || result.length < 100) return res.status(404).send('Image not found')
 
     imgCache.set(cacheKey, { buffer: result, contentType: 'image/png', expiresAt: Date.now() + 86400000 })
     if (imgCache.size > 1000) {
@@ -2260,7 +2304,7 @@ function proxyKaloCDN(cdnPath, cacheKey, res) {
     res.set('Cache-Control', 'public, max-age=86400')
     res.send(result)
   } catch {
-    res.status(502).send('Failed to fetch image')
+    if (!res.headersSent) res.status(502).send('Failed to fetch image')
   }
 }
 
