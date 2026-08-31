@@ -732,26 +732,30 @@ const TK_PAGINA_TIMEOUT_MS = 20000
 const TK_PAGINA_TENTATIVAS = Math.max(1, Number(process.env.TIKTOK_PAGINA_TENTATIVAS || 6))
 const TK_PAGINA_ESPERA_MS = 400
 
-// Duas respostas ruins diferentes, e confundir as duas custa caro:
+// A página tem TRÊS respostas, e saber qual veio é metade do diagnóstico:
 //
-// - CASCA VAZIA (~44 KB): a roleta normal do TikTok. Repetir resolve.
-// - DESAFIO DO WAF (~1,5 KB, "Please wait...", `_wafchallengeid`): o IP levou
-//   limite de taxa. Repetir aqui não resolve NADA e ainda afunda mais o
-//   bloqueio, então a rodada para na primeira aparição e o caminho entra de
-//   castigo, com os pedidos indo direto para o yt-dlp (que fala com o mesmo
-//   endereço por outra pilha de TLS e continua passando). Apareceu de verdade
-//   em 31/08, depois de uma rajada de testes contra o mesmo IP.
+// - HIDRATADA (~450 KB): o que queremos.
+// - CASCA VAZIA (~44 KB): a roleta de sempre do TikTok.
+// - DESAFIO DO WAF (~1,5 KB, "Please wait...", `_wafchallengeid`): a resposta
+//   de limite de taxa.
 //
-// O castigo é uma REDUÇÃO, não um bloqueio: durante ele ainda vai uma tentativa
-// por pedido. O bloqueio total custava caro na volta — medido em 31/08, o WAF
-// soltou o IP e o caminho bom seguiu de fora por mais quatro minutos, porque
-// ninguém estava olhando. Uma sonda de meio segundo devolve o caminho no
-// primeiro pedido depois que o TikTok libera, e no bloqueio de verdade custa
-// uma requisição em vez de seis.
-const TK_PAGINA_CASTIGO_MS = 5 * 60 * 1000
-let paginaDeCastigoAte = 0
-
+// As duas ruins são INTERMITENTES do mesmo jeito, e a reação para as duas é a
+// mesma: tentar de novo. Isso aqui já foi um mecanismo mais esperto, que punha
+// o caminho em observação ao primeiro WAF e reduzia a rodada a uma sonda; ele
+// foi removido no mesmo dia porque virava uma armadilha que se alimentava
+// sozinha. Com uma tentativa só por pedido, e o WAF aparecendo em boa parte
+// das requisições, essa única sonda caía no WAF, renovava a própria
+// observação, e o caminho nunca mais voltava. Medido: cinco pedidos seguidos
+// presos em `pg_waf` enquanto um `curl` na MESMA máquina, no mesmo segundo,
+// recebia a página inteira.
+//
+// A ideia de que insistir "afunda o bloqueio" era hipótese minha, nunca
+// medida. O que foi medido é o contrário: o IP alterna resposta a cada
+// requisição, e quem repete passa. O log distingue as duas para quando isso
+// mudar.
 const ehDesafioDoWaf = (html) => html.length < 20000 && /_wafchallengeid|SlardarWAF/.test(html)
+/** Depois do WAF a próxima tentativa espera mais: é limite de taxa, afinal. */
+const TK_PAGINA_ESPERA_WAF_MS = 900
 
 /**
  * Abre a página do vídeo e devolve `{ item }` com o `itemStruct`, ou
@@ -763,10 +767,11 @@ const ehDesafioDoWaf = (html) => html.length < 20000 && /_wafchallengeid|Slardar
  */
 async function abrePaginaDoTikTok (idVideo) {
   const alvo = `https://www.tiktok.com/@i/video/${idVideo}?is_from_webapp=1&sender_device=pc`
-  const limite = Date.now() < paginaDeCastigoAte ? 1 : TK_PAGINA_TENTATIVAS
+  let wafs = 0
 
-  for (let i = 1; i <= limite; i++) {
+  for (let i = 1; i <= TK_PAGINA_TENTATIVAS; i++) {
     let html = ''
+    let espera = TK_PAGINA_ESPERA_MS
     try {
       const r = await fetch(alvo, {
         headers: { 'User-Agent': YTDLP_UA, 'Accept-Language': 'pt-BR,pt;q=0.9' },
@@ -779,15 +784,23 @@ async function abrePaginaDoTikTok (idVideo) {
     }
     if (html) {
       if (ehDesafioDoWaf(html)) {
-        paginaDeCastigoAte = Date.now() + TK_PAGINA_CASTIGO_MS
-        console.warn(`[pagina] desafio do WAF na tentativa ${i}: caminho reduzido a uma sonda por ${TK_PAGINA_CASTIGO_MS / 60000} min`)
-        return { erro: 'pg_waf' }
+        wafs++
+        espera = TK_PAGINA_ESPERA_WAF_MS
+        console.warn(`[pagina] tentativa ${i}: desafio do WAF (${html.length} bytes)`)
+      } else {
+        const item = itemDaPagina(html)
+        if (item) return { item }
+        console.warn(`[pagina] tentativa ${i}: casca sem os dados do video (${html.length} bytes)`)
       }
-      const item = itemDaPagina(html)
-      if (item) return { item }
-      console.warn(`[pagina] tentativa ${i}: casca sem os dados do video (${html.length} bytes)`)
     }
-    if (i < limite) await new Promise((pronto) => setTimeout(pronto, TK_PAGINA_ESPERA_MS))
+    if (i < TK_PAGINA_TENTATIVAS) await new Promise((pronto) => setTimeout(pronto, espera))
+  }
+  // Rodada inteira no WAF é outro problema que rodada inteira na casca vazia:
+  // uma é o IP em limite de taxa, a outra é o TikTok não hidratando. Quem for
+  // ler o log depois precisa dessa diferença.
+  if (wafs === TK_PAGINA_TENTATIVAS) {
+    console.warn('[pagina] as ' + wafs + ' tentativas caíram no WAF: o IP está em limite de taxa')
+    return { erro: 'pg_waf' }
   }
   return { erro: 'pg_sem_dados' }
 }
