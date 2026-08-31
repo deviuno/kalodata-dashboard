@@ -902,6 +902,36 @@ app.get('/api/tiktok/health', requireAdminKey, (_req, res) => {
 // ausência tiraria da lista vídeo que talvez aceite. Não dá para afirmar que
 // ausente significa desligado: em 34 amostras nunca apareceu um caso com um
 // campo presente e o outro ausente, que é o que provaria a omissão por campo.
+//
+// CACHE de 6 horas por vídeo. O que ele evita não é repetição de tela (o
+// resultado da busca já é cacheado do lado de lá), e sim o MESMO vídeo
+// aparecendo no topo de buscas diferentes: "perfume" e "perfume importado"
+// devolvem em boa parte a mesma cabeça de lista. Como cada consulta custa de
+// 1,5s a 7s e a permissão de um vídeo publicado praticamente não muda, guardar
+// é o que separa uma busca de 10s de uma instantânea.
+const TK_PERM_TTL_MS = 6 * 60 * 60 * 1000
+const TK_PERM_MAX = 500
+const permissaoCache = new Map() // id -> { valor, quando }
+
+function permissaoGuardada (id) {
+  const achado = permissaoCache.get(id)
+  if (!achado) return null
+  if (Date.now() - achado.quando > TK_PERM_TTL_MS) {
+    permissaoCache.delete(id)
+    return null
+  }
+  return achado.valor
+}
+
+function guardaPermissao (id, valor) {
+  // Map preserva ordem de inserção: o mais antigo é o primeiro a sair.
+  if (permissaoCache.size >= TK_PERM_MAX) {
+    const maisVelho = permissaoCache.keys().next().value
+    if (maisVelho !== undefined) permissaoCache.delete(maisVelho)
+  }
+  permissaoCache.set(id, { valor, quando: Date.now() })
+}
+
 app.get('/api/tiktok/react-permission', requireAdminKey, async (req, res) => {
   const url = String((req.query && req.query.url) || '').trim()
   if (!TIKTOK_URL_RE.test(url)) {
@@ -911,6 +941,12 @@ app.get('/api/tiktok/react-permission', requireAdminKey, async (req, res) => {
     const idVideo = idDoVideoTikTok(url) || await idPeloEncurtador(url)
     if (!idVideo) return res.status(422).json({ success: false, code: 'pg_sem_id', message: 'Não achei o id do vídeo na URL.' })
 
+    // Só o SUCESSO é guardado. Falha de leitura é estado da rede naquele
+    // instante, não fato sobre o vídeo, e guardá-la deixaria o vídeo marcado
+    // como "não verificado" por seis horas por causa de um tropeço.
+    const guardada = permissaoGuardada(idVideo)
+    if (guardada) return res.json({ success: true, cache: true, ...guardada })
+
     const { item, erro } = await abrePaginaDoTikTok(idVideo)
     if (!item) return res.status(502).json({ success: false, code: erro, message: 'A página do vídeo não respondeu com os dados.' })
 
@@ -919,13 +955,14 @@ app.get('/api/tiktok/react-permission', requireAdminKey, async (req, res) => {
     if (duet === null && stitch === null) {
       return res.status(422).json({ success: false, code: 'sem_permissao', videoId: idVideo, message: 'A página não trouxe duetEnabled/stitchEnabled.' })
     }
-    return res.json({
-      success: true,
+    const valor = {
       videoId: idVideo,
       duet: duet === true,
       stitch: stitch === true,
       aceita: duet === true || stitch === true,
-    })
+    }
+    guardaPermissao(idVideo, valor)
+    return res.json({ success: true, ...valor })
   } catch (e) {
     return res.status(502).json({ success: false, code: 'pg_falhou', message: String((e && e.message) || e).slice(0, 200) })
   }
