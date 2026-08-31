@@ -947,8 +947,13 @@ app.get('/api/tiktok/react-permission', requireAdminKey, async (req, res) => {
     const guardada = permissaoGuardada(idVideo)
     if (guardada) return res.json({ success: true, cache: true, ...guardada })
 
+    // 422 e não 5xx de propósito: o Cloudflare do túnel SUBSTITUI o corpo de
+    // qualquer 5xx pela página de erro dele, e aí o motivo (`pg_waf` contra
+    // `pg_sem_dados`) morre antes de chegar em quem chamou. Medido em 31/08.
+    // Semanticamente também é mais honesto: a rota está de pé, o que ela não
+    // consegue é responder por ESTE vídeo agora.
     const { item, erro } = await abrePaginaDoTikTok(idVideo)
-    if (!item) return res.status(502).json({ success: false, code: erro, message: 'A página do vídeo não respondeu com os dados.' })
+    if (!item) return res.status(422).json({ success: false, code: erro, message: 'A página do vídeo não respondeu com os dados.' })
 
     const duet = typeof item.duetEnabled === 'boolean' ? item.duetEnabled : null
     const stitch = typeof item.stitchEnabled === 'boolean' ? item.stitchEnabled : null
@@ -964,7 +969,7 @@ app.get('/api/tiktok/react-permission', requireAdminKey, async (req, res) => {
     guardaPermissao(idVideo, valor)
     return res.json({ success: true, ...valor })
   } catch (e) {
-    return res.status(502).json({ success: false, code: 'pg_falhou', message: String((e && e.message) || e).slice(0, 200) })
+    return res.status(422).json({ success: false, code: 'pg_falhou', message: String((e && e.message) || e).slice(0, 200) })
   }
 })
 
