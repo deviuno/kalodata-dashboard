@@ -719,23 +719,30 @@ const TK_PAGINA_ESPERA_MS = 400
 // - CASCA VAZIA (~44 KB): a roleta normal do TikTok. Repetir resolve.
 // - DESAFIO DO WAF (~1,5 KB, "Please wait...", `_wafchallengeid`): o IP levou
 //   limite de taxa. Repetir aqui não resolve NADA e ainda afunda mais o
-//   bloqueio, então a rodada para na hora e o caminho fica de castigo por uns
-//   minutos, com os pedidos indo direto para o yt-dlp (que usa outra pilha de
-//   TLS e continua passando). Apareceu de verdade em 31/08, depois de uma
-//   rajada de testes contra o mesmo IP.
+//   bloqueio, então a rodada para na primeira aparição e o caminho entra de
+//   castigo, com os pedidos indo direto para o yt-dlp (que fala com o mesmo
+//   endereço por outra pilha de TLS e continua passando). Apareceu de verdade
+//   em 31/08, depois de uma rajada de testes contra o mesmo IP.
+//
+// O castigo é uma REDUÇÃO, não um bloqueio: durante ele ainda vai uma tentativa
+// por pedido. O bloqueio total custava caro na volta — medido em 31/08, o WAF
+// soltou o IP e o caminho bom seguiu de fora por mais quatro minutos, porque
+// ninguém estava olhando. Uma sonda de meio segundo devolve o caminho no
+// primeiro pedido depois que o TikTok libera, e no bloqueio de verdade custa
+// uma requisição em vez de seis.
 const TK_PAGINA_CASTIGO_MS = 5 * 60 * 1000
 let paginaDeCastigoAte = 0
 
 const ehDesafioDoWaf = (html) => html.length < 20000 && /_wafchallengeid|SlardarWAF/.test(html)
 
 async function baixarTikTokViaPaginaDireta (url, destino) {
-  if (Date.now() < paginaDeCastigoAte) return 'pg_waf'
   const idVideo = idDoVideoTikTok(url) || await idPeloEncurtador(url)
   if (!idVideo) return 'pg_sem_id'
   const alvo = `https://www.tiktok.com/@i/video/${idVideo}?is_from_webapp=1&sender_device=pc`
+  const limite = Date.now() < paginaDeCastigoAte ? 1 : TK_PAGINA_TENTATIVAS
 
   let achado = null
-  for (let i = 1; i <= TK_PAGINA_TENTATIVAS && !achado; i++) {
+  for (let i = 1; i <= limite && !achado; i++) {
     let html = ''
     try {
       const r = await fetch(alvo, {
@@ -750,7 +757,7 @@ async function baixarTikTokViaPaginaDireta (url, destino) {
     if (html) {
       if (ehDesafioDoWaf(html)) {
         paginaDeCastigoAte = Date.now() + TK_PAGINA_CASTIGO_MS
-        console.warn(`[pagina] desafio do WAF na tentativa ${i}: caminho suspenso por ${TK_PAGINA_CASTIGO_MS / 60000} min`)
+        console.warn(`[pagina] desafio do WAF na tentativa ${i}: caminho reduzido a uma sonda por ${TK_PAGINA_CASTIGO_MS / 60000} min`)
         return 'pg_waf'
       }
       const lido = candidatasDaPagina(html)
@@ -758,7 +765,7 @@ async function baixarTikTokViaPaginaDireta (url, destino) {
       if (lido) achado = lido
       else console.warn(`[pagina] tentativa ${i}: casca sem os dados do video (${html.length} bytes)`)
     }
-    if (!achado && i < TK_PAGINA_TENTATIVAS) {
+    if (!achado && i < limite) {
       await new Promise((pronto) => setTimeout(pronto, TK_PAGINA_ESPERA_MS))
     }
   }
