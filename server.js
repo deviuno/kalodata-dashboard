@@ -714,7 +714,22 @@ const TK_PAGINA_TIMEOUT_MS = 20000
 const TK_PAGINA_TENTATIVAS = Math.max(1, Number(process.env.TIKTOK_PAGINA_TENTATIVAS || 6))
 const TK_PAGINA_ESPERA_MS = 400
 
+// Duas respostas ruins diferentes, e confundir as duas custa caro:
+//
+// - CASCA VAZIA (~44 KB): a roleta normal do TikTok. Repetir resolve.
+// - DESAFIO DO WAF (~1,5 KB, "Please wait...", `_wafchallengeid`): o IP levou
+//   limite de taxa. Repetir aqui não resolve NADA e ainda afunda mais o
+//   bloqueio, então a rodada para na hora e o caminho fica de castigo por uns
+//   minutos, com os pedidos indo direto para o yt-dlp (que usa outra pilha de
+//   TLS e continua passando). Apareceu de verdade em 31/08, depois de uma
+//   rajada de testes contra o mesmo IP.
+const TK_PAGINA_CASTIGO_MS = 5 * 60 * 1000
+let paginaDeCastigoAte = 0
+
+const ehDesafioDoWaf = (html) => html.length < 20000 && /_wafchallengeid|SlardarWAF/.test(html)
+
 async function baixarTikTokViaPaginaDireta (url, destino) {
+  if (Date.now() < paginaDeCastigoAte) return 'pg_waf'
   const idVideo = idDoVideoTikTok(url) || await idPeloEncurtador(url)
   if (!idVideo) return 'pg_sem_id'
   const alvo = `https://www.tiktok.com/@i/video/${idVideo}?is_from_webapp=1&sender_device=pc`
@@ -733,6 +748,11 @@ async function baixarTikTokViaPaginaDireta (url, destino) {
       console.warn(`[pagina] tentativa ${i}: ${String((e && e.message) || e).slice(0, 100)}`)
     }
     if (html) {
+      if (ehDesafioDoWaf(html)) {
+        paginaDeCastigoAte = Date.now() + TK_PAGINA_CASTIGO_MS
+        console.warn(`[pagina] desafio do WAF na tentativa ${i}: caminho suspenso por ${TK_PAGINA_CASTIGO_MS / 60000} min`)
+        return 'pg_waf'
+      }
       const lido = candidatasDaPagina(html)
       if (lido && lido.photo) return 'fs_photo_mode'
       if (lido) achado = lido
