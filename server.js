@@ -2233,13 +2233,15 @@ app.get('/api/products', async (req, res) => {
 // KaloCDN image proxy (products, videos, creators)
 // ---------------------------------------------------------------------------
 // Uma listagem do painel pede ~80 imagens de uma vez. Ate 31/08/2026 cada uma
-// rodava execFileSync: o event loop parava por ate 15s POR IMAGEM, e a fila
-// inteira ficava refem do curl - inclusive as rotas de listagem, que dividem o
-// mesmo processo. No navegador o efeito era a grade sem miniatura por dezenas
-// de segundos (medido: 5 de 32 imagens visiveis no primeiro paint, e mais de
-// 20s para completar). Agora o curl roda async, com teto de concorrencia e
-// deduplicacao dos pedidos iguais em voo: a mesma imagem pedida por dez abas
-// gasta um curl so.
+// rodava execFileSync, que PARA o event loop enquanto o curl nao volta: as 80
+// eram atendidas estritamente em serie, e no meio disso o processo inteiro
+// ficava surdo, inclusive para as rotas de listagem, que moram aqui do lado.
+// Com ~1,2s por imagem fria, uma grade custava mais de um minuto de servidor
+// bloqueado.
+// Depois desta troca, medido do navegador: 78 avatares frios de /explorar/
+// criadores, todos os 78 respondidos, 2,6s no total e mediana de 1,5s.
+// O curl agora roda async, com teto de concorrencia e deduplicacao dos pedidos
+// iguais em voo: a mesma imagem pedida por dez abas gasta um curl so.
 const imgCache = new Map()
 const imgInflight = new Map()
 const IMG_MAX_CONCURRENCY = 6
