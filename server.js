@@ -447,16 +447,34 @@ async function abrePaginaNoFlareSolverr (url) {
  * faixas h265/bytevc1 do TikTok vêm sem trilha de áudio na prática) e, entre as
  * h264, a de maior quadro.
  */
-function candidatasDaPagina (html) {
+/**
+ * O `itemStruct` que a página do vídeo embute, ou null quando ela veio sem os
+ * dados (casca vazia, bloqueio, mudança de formato).
+ *
+ * Vive separado das candidatas porque a MESMA leitura serve a duas perguntas:
+ * "onde está o arquivo" (o download) e "este vídeo aceita duet/stitch" (a
+ * permissão dos Vídeos para react). Duas cópias do mesmo parse divergiriam na
+ * primeira vez que o TikTok mudasse o nome do bloco.
+ */
+function itemDaPagina (html) {
   const bloco = html.match(/id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/)
   if (!bloco) return null
-  let item
   try {
-    item = JSON.parse(bloco[1]).__DEFAULT_SCOPE__['webapp.video-detail'].itemInfo.itemStruct
+    return JSON.parse(bloco[1]).__DEFAULT_SCOPE__['webapp.video-detail'].itemInfo.itemStruct || null
   } catch (e) {
     return null
   }
-  if (item && item.imagePost) return { photo: true, urls: [] }
+}
+
+function candidatasDaPagina (html) {
+  const item = itemDaPagina(html)
+  if (!item) return null
+  if (item.imagePost) return { photo: true, urls: [] }
+  return candidatasDoItem(item)
+}
+
+/** A parte de `candidatasDaPagina` que já recebe o item lido. */
+function candidatasDoItem (item) {
   const video = item && item.video
   if (!video) return null
 
@@ -735,14 +753,19 @@ let paginaDeCastigoAte = 0
 
 const ehDesafioDoWaf = (html) => html.length < 20000 && /_wafchallengeid|SlardarWAF/.test(html)
 
-async function baixarTikTokViaPaginaDireta (url, destino) {
-  const idVideo = idDoVideoTikTok(url) || await idPeloEncurtador(url)
-  if (!idVideo) return 'pg_sem_id'
+/**
+ * Abre a página do vídeo e devolve `{ item }` com o `itemStruct`, ou
+ * `{ erro }` com o código da desistência.
+ *
+ * Aqui moram a repetição contra a roleta e a reação ao WAF, e não no chamador,
+ * porque quem pergunta pelo arquivo e quem pergunta pela permissão de react
+ * enfrentam exatamente a mesma porta.
+ */
+async function abrePaginaDoTikTok (idVideo) {
   const alvo = `https://www.tiktok.com/@i/video/${idVideo}?is_from_webapp=1&sender_device=pc`
   const limite = Date.now() < paginaDeCastigoAte ? 1 : TK_PAGINA_TENTATIVAS
 
-  let achado = null
-  for (let i = 1; i <= limite && !achado; i++) {
+  for (let i = 1; i <= limite; i++) {
     let html = ''
     try {
       const r = await fetch(alvo, {
@@ -758,17 +781,25 @@ async function baixarTikTokViaPaginaDireta (url, destino) {
       if (ehDesafioDoWaf(html)) {
         paginaDeCastigoAte = Date.now() + TK_PAGINA_CASTIGO_MS
         console.warn(`[pagina] desafio do WAF na tentativa ${i}: caminho reduzido a uma sonda por ${TK_PAGINA_CASTIGO_MS / 60000} min`)
-        return 'pg_waf'
+        return { erro: 'pg_waf' }
       }
-      const lido = candidatasDaPagina(html)
-      if (lido && lido.photo) return 'fs_photo_mode'
-      if (lido) achado = lido
-      else console.warn(`[pagina] tentativa ${i}: casca sem os dados do video (${html.length} bytes)`)
+      const item = itemDaPagina(html)
+      if (item) return { item }
+      console.warn(`[pagina] tentativa ${i}: casca sem os dados do video (${html.length} bytes)`)
     }
-    if (!achado && i < limite) {
-      await new Promise((pronto) => setTimeout(pronto, TK_PAGINA_ESPERA_MS))
-    }
+    if (i < limite) await new Promise((pronto) => setTimeout(pronto, TK_PAGINA_ESPERA_MS))
   }
+  return { erro: 'pg_sem_dados' }
+}
+
+async function baixarTikTokViaPaginaDireta (url, destino) {
+  const idVideo = idDoVideoTikTok(url) || await idPeloEncurtador(url)
+  if (!idVideo) return 'pg_sem_id'
+
+  const { item, erro } = await abrePaginaDoTikTok(idVideo)
+  if (!item) return erro
+  if (item.imagePost) return 'fs_photo_mode'
+  const achado = candidatasDoItem(item)
   if (!achado || !achado.urls.length) return 'pg_sem_dados'
 
   // Sem cookie: a lista de candidatas traz o mesmo arquivo em vários espelhos
@@ -843,6 +874,50 @@ app.get('/api/tiktok/health', requireAdminKey, (_req, res) => {
     res.json({ success: true, ytdlp: String(stdout).trim(), bin: YTDLP_BIN })
   })
 })
+// GET /api/tiktok/react-permission?url=… — o vídeo aceita duet/stitch?
+//
+// Quem pergunta é a fonte TikTok dos "Vídeos para react": um vídeo que recusa
+// react manda o cliente gravar a reação e descobrir no app que o botão não
+// existe. Até 31/08/2026 a resposta vinha do `interact_permission` do
+// ScrapeCreators, cobrado POR VÍDEO; agora vem da mesma página que o baixador
+// já abre de graça, onde os campos se chamam `duetEnabled`/`stitchEnabled`.
+//
+// TRÊS estados, nunca dois. Quando os dois campos estão AUSENTES do item (medido
+// em 34 vídeos: acontece em 2, os dois de e-commerce), a resposta é 422
+// `sem_permissao` e quem chamou marca "não verificado". Chutar "aceita" aqui é
+// justamente o erro que a verificação existe para evitar, e "recusa" por
+// ausência tiraria da lista vídeo que talvez aceite. Não dá para afirmar que
+// ausente significa desligado: em 34 amostras nunca apareceu um caso com um
+// campo presente e o outro ausente, que é o que provaria a omissão por campo.
+app.get('/api/tiktok/react-permission', requireAdminKey, async (req, res) => {
+  const url = String((req.query && req.query.url) || '').trim()
+  if (!TIKTOK_URL_RE.test(url)) {
+    return res.status(400).json({ success: false, code: 'invalid_url', message: 'URL de TikTok inválida.' })
+  }
+  try {
+    const idVideo = idDoVideoTikTok(url) || await idPeloEncurtador(url)
+    if (!idVideo) return res.status(422).json({ success: false, code: 'pg_sem_id', message: 'Não achei o id do vídeo na URL.' })
+
+    const { item, erro } = await abrePaginaDoTikTok(idVideo)
+    if (!item) return res.status(502).json({ success: false, code: erro, message: 'A página do vídeo não respondeu com os dados.' })
+
+    const duet = typeof item.duetEnabled === 'boolean' ? item.duetEnabled : null
+    const stitch = typeof item.stitchEnabled === 'boolean' ? item.stitchEnabled : null
+    if (duet === null && stitch === null) {
+      return res.status(422).json({ success: false, code: 'sem_permissao', videoId: idVideo, message: 'A página não trouxe duetEnabled/stitchEnabled.' })
+    }
+    return res.json({
+      success: true,
+      videoId: idVideo,
+      duet: duet === true,
+      stitch: stitch === true,
+      aceita: duet === true || stitch === true,
+    })
+  } catch (e) {
+    return res.status(502).json({ success: false, code: 'pg_falhou', message: String((e && e.message) || e).slice(0, 200) })
+  }
+})
+
 // URLs aceitas: TikTok (inclui encurtadores vm./vt.) e Instagram (reel/p/tv/share).
 const INSTAGRAM_URL_RE = /^https?:\/\/(www\.)?instagram\.com\/\S+$/i
 function urlDeVideoValida (url) {
