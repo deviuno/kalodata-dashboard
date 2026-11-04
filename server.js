@@ -1997,6 +1997,38 @@ function getDateRange(days) {
   return { startDate: fmt(start), endDate: fmt(end) }
 }
 
+// Janela pedida pelo cliente: ?startDate=AAAA-MM-DD&endDate=AAAA-MM-DD ou ?days=N.
+// Usada pelos endpoints de criador que a Central do criador do Domma chama.
+//
+// O teto de 365 dias é da fonte: medido em 03/11/2026 com o mesmo criador,
+// days=365 devolve o último ano, e qualquer janela maior (366, 400, 540) volta
+// EM SILÊNCIO com os números de 180 dias. Por isso janela maior é erro 400 aqui,
+// e quem precisar de mais soma janelas. O fim vai no máximo até ontem, como o
+// getDateRange: o dia de hoje ainda não está fechado na fonte.
+const JANELA_MAX_DIAS = 365
+function janelaDoPedido(req, diasPadrao) {
+  const { startDate, endDate } = req.query
+  if (!startDate && !endDate) return getDateRange(parseInt(req.query.days) || diasPadrao)
+  const formato = /^\d{4}-\d{2}-\d{2}$/
+  if (!formato.test(String(startDate || '')) || !formato.test(String(endDate || ''))) {
+    throw Object.assign(new Error('startDate e endDate em AAAA-MM-DD, os dois'), { janela_invalida: true })
+  }
+  const dia = (t) => new Date(`${t}T12:00:00`)
+  const ini = dia(startDate)
+  const fim = dia(endDate)
+  const ontem = getDateRange(1).endDate
+  if (Number.isNaN(ini.getTime()) || Number.isNaN(fim.getTime())) {
+    throw Object.assign(new Error('data inexistente'), { janela_invalida: true })
+  }
+  if (ini > fim) throw Object.assign(new Error('startDate depois de endDate'), { janela_invalida: true })
+  if (endDate > ontem) throw Object.assign(new Error(`endDate depois de ontem (${ontem})`), { janela_invalida: true })
+  const dias = Math.round((fim - ini) / 86400000) + 1
+  if (dias > JANELA_MAX_DIAS) {
+    throw Object.assign(new Error(`janela de ${dias} dias; o máximo da fonte é ${JANELA_MAX_DIAS}`), { janela_invalida: true })
+  }
+  return { startDate, endDate }
+}
+
 // ---------------------------------------------------------------------------
 // Session check
 // ---------------------------------------------------------------------------
@@ -2819,11 +2851,10 @@ app.get('/api/creator/:id/videos', async (req, res) => {
   try {
     const country = parseCountry(req)
     const { id } = req.params
-    const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
     const sortField = req.query.sortField || 'revenue'
-    const range = getDateRange(days)
+    const range = janelaDoPedido(req, 7)
 
     // pageSize AQUI e sempre 10, nao o que o cliente pediu. Medido em 01/08/2026
     // contra dois criadores: com qualquer outro valor (5, 11, 12, 15, 20, 30, 50) o
@@ -2860,6 +2891,7 @@ app.get('/api/creator/:id/videos', async (req, res) => {
 
     res.json({ success: true, data: items, total, pageSize: UPSTREAM_PAGE_SIZE, capped: pageSize > UPSTREAM_PAGE_SIZE })
   } catch (e) {
+    if (e.janela_invalida)  return res.status(400).json({ success: false, error: 'janela_invalida', message: e.message })
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
     res.status(500).json({ success: false, message: e.message })
@@ -3913,10 +3945,9 @@ app.get('/api/creator/:id/products', async (req, res) => {
   try {
     const country = parseCountry(req)
     const { id } = req.params
-    const days = parseInt(req.query.days) || 7
     const page = parseInt(req.query.page) || 1
     const pageSize = parseInt(req.query.pageSize) || 20
-    const range = getDateRange(days)
+    const range = janelaDoPedido(req, 7)
 
     const data = await kaloPostAsync('/creator/detail/searchProducts', {
       id,
@@ -3930,6 +3961,7 @@ app.get('/api/creator/:id/products', async (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
+    if (e.janela_invalida)  return res.status(400).json({ success: false, error: 'janela_invalida', message: e.message })
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
     res.status(500).json({ success: false, message: e.message })
@@ -3997,8 +4029,7 @@ app.get('/api/creator/:id/total', async (req, res) => {
   try {
     const country = parseCountry(req)
     const { id } = req.params
-    const days = parseInt(req.query.days) || 7
-    const range = getDateRange(days)
+    const range = janelaDoPedido(req, 7)
 
     const data = await kaloPostAsync('/creator/detail/total', {
       id,
@@ -4009,6 +4040,7 @@ app.get('/api/creator/:id/total', async (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
+    if (e.janela_invalida)  return res.status(400).json({ success: false, error: 'janela_invalida', message: e.message })
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
     res.status(500).json({ success: false, message: e.message })
