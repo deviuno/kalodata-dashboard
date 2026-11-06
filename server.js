@@ -3609,6 +3609,72 @@ app.get('/api/creators', async (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
+// Criadores que declararam um contato (prospecção do CRM)
+// ---------------------------------------------------------------------------
+
+// Mesmas opções do filtro "Contato do criador" da tela do upstream. "ins_id" dá erro lá: o nome é "instagram".
+const CANAIS_DE_CONTATO = new Set(['whatsapp', 'email', 'instagram', 'facebook', 'youtube', 'twitter'])
+const ORDENS_DE_CRIADOR = new Set(['revenue', 'followers', 'sale', 'views'])
+
+/**
+ * @swagger
+ * /api/creators/with-contact:
+ *   get:
+ *     summary: Criadores com um canal de contato declarado (exige x-admin-key)
+ *     description: A linha não traz o contato, só o criador; o valor vem de /api/creator/{id}/detail. A paginação tem teto do plano, e `limite` true avisa que ele foi atingido.
+ *     tags: [Creators]
+ *     parameters:
+ *       - { in: query, name: channels, required: true, schema: { type: string }, description: 'Lista separada por vírgula' }
+ *       - { in: query, name: country, schema: { type: string } }
+ *       - { in: query, name: page, schema: { type: integer } }
+ *       - { in: query, name: sortField, schema: { type: string } }
+ *       - { in: query, name: days, schema: { type: integer } }
+ *     responses:
+ *       200: { description: Página de criadores }
+ *       400: { description: Canal ausente ou desconhecido }
+ *       401: { description: Sem x-admin-key }
+ */
+// Rota própria em vez de um parâmetro em /api/creators: esta é só do CRM, não enriquece produtos (economiza consultas
+// ao upstream) e fica atrás da chave, porque cada chamada gasta a cota do plano.
+app.get('/api/creators/with-contact', requireAdminKey, async (req, res) => {
+  try {
+    const canais = String(req.query.channels || '').split(',').map((c) => c.trim().toLowerCase()).filter(Boolean)
+    if (canais.length === 0 || !canais.every((c) => CANAIS_DE_CONTATO.has(c))) {
+      return res.status(400).json({ success: false, message: 'channels ausente ou desconhecido' })
+    }
+    const country = parseCountry(req)
+    const page = Math.max(parseInt(req.query.page) || 1, 1)
+    const sortField = ORDENS_DE_CRIADOR.has(req.query.sortField) ? req.query.sortField : 'revenue'
+    const range = getDateRange(parseInt(req.query.days) || 30)
+
+    const data = await kaloPostAsync('/creator/queryList', {
+      country,
+      ...range,
+      pageNo: page,
+      pageSize: 60,
+      cateIds: [],
+      showCateIds: [],
+      sort: [{ field: sortField, type: 'DESC' }],
+      'creator.filter.creator_content': canais,
+    }, country)
+
+    if (data && data.success === false) {
+      // O teto de páginas do plano é o fim da lista, não uma falha: trocar a ordem traz outros criadores.
+      if (/pagination limit/i.test(String(data.message || ''))) {
+        return res.json({ success: true, data: [], limite: true })
+      }
+      return res.status(502).json({ success: false, message: String(data.message || 'upstream recusou').slice(0, 200) })
+    }
+
+    const data_ = data && data.data
+    const items = Array.isArray(data_) ? data_ : Array.isArray(data_ && data_.list) ? data_.list : Array.isArray(data && data.list) ? data.list : []
+    res.json({ success: true, data: items, limite: false })
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Creator avatar proxy (KaloCDN)
 // ---------------------------------------------------------------------------
 
