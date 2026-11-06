@@ -10,10 +10,49 @@ import swaggerUi from 'swagger-ui-express'
 import { headersForCountry, parseCountry, countryLowercase, DEFAULT_COUNTRY, COUNTRY_CONFIG } from './lib/countries.js'
 import { runScraperFn, getQueueStats } from './lib/scraper-queue.js'
 import { newHeaderDumpPath, headerDumpArgs, absorbHeaderDump } from './lib/cookie-jar.js'
+import { corpoDeRecusa, criarCota, origemDoPedido, rotaComCota } from './lib/cota.js'
 
 const app = express()
 app.use(cors())
 app.use(express.json())
+
+// Cota de detalhes da fonte (ver lib/cota.js). O portão fica antes de todas as rotas.
+const cota = criarCota()
+let lendoCota = false
+
+async function lerCotaSePreciso () {
+  if (lendoCota || !cota.precisaLer()) return
+  lendoCota = true
+  cota.marcarTentativaDeLeitura()
+  try {
+    const r = await kaloPostAsync('/user/features', { country: 'BR', list: ['DETAIL.ACCESS_TIMES'] }, 'BR', null)
+    cota.registrarLeitura(r?.data?.['DETAIL.ACCESS_TIMES']?.progress)
+  } catch (e) {
+    console.warn('[cota] leitura falhou:', e.message)
+  } finally {
+    lendoCota = false
+  }
+}
+
+app.use((req, res, next) => {
+  const alvo = req.method === 'GET' ? rotaComCota(req.path) : null
+  if (!alvo) return next()
+  const origem = origemDoPedido(req.headers['x-origem'])
+  const decisao = cota.decidir(origem, alvo.item)
+  if (!decisao.permitido) {
+    console.log(`[cota] recusa origem=${origem} rota=${alvo.rota} restante=${cota.restante()}`)
+    return res.json(corpoDeRecusa(decisao.reserva))
+  }
+  lerCotaSePreciso()
+  const enviar = res.json.bind(res)
+  res.json = (corpo) => {
+    if (cota.registrarResposta(origem, alvo.item, corpo).novo) {
+      console.log(`[cota] novo origem=${origem} rota=${alvo.rota} restante=${cota.restante()}`)
+    }
+    return enviar(corpo)
+  }
+  next()
+})
 
 const PORT = parseInt(process.env.PORT) || 4001
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
@@ -2034,7 +2073,8 @@ function janelaDoPedido(req, diasPadrao) {
 // ---------------------------------------------------------------------------
 function checkSession() {
   try {
-    const data = kaloPost('/user/features', { country: 'BR', list: ['PRODUCT.LIST'] })
+    const data = kaloPost('/user/features', { country: 'BR', list: ['PRODUCT.LIST', 'DETAIL.ACCESS_TIMES'] })
+    cota.registrarLeitura(data?.data?.['DETAIL.ACCESS_TIMES']?.progress)
     return data.success === true
   } catch {
     return false
@@ -4156,6 +4196,24 @@ app.get('/api/creator/:id/detail', (req, res) => {
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
   }
+})
+
+// ---------------------------------------------------------------------------
+// Cota de detalhes
+// ---------------------------------------------------------------------------
+
+/**
+ * @swagger
+ * /api/quota:
+ *   get:
+ *     summary: Uso da cota de detalhes da fonte, sem consultar a fonte (exige x-admin-key)
+ *     tags: [Session]
+ *     responses:
+ *       200: { description: Total, usado e restante do ciclo, por origem }
+ *       401: { description: Sem x-admin-key }
+ */
+app.get('/api/quota', requireAdminKey, (_req, res) => {
+  res.json({ success: true, data: cota.resumo() })
 })
 
 // ---------------------------------------------------------------------------
