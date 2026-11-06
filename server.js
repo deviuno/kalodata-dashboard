@@ -11,6 +11,7 @@ import { headersForCountry, parseCountry, countryLowercase, DEFAULT_COUNTRY, COU
 import { runScraperFn, getQueueStats } from './lib/scraper-queue.js'
 import { newHeaderDumpPath, headerDumpArgs, absorbHeaderDump } from './lib/cookie-jar.js'
 import { corpoDeRecusa, criarCota, origemDoPedido, rotaComCota, falhaDaFonte, fonteSemCota } from './lib/cota.js'
+import { cortarNaBusca, pedidoDaLista, tamanhoNaFonte, termoDaBusca } from './lib/busca.js'
 
 const app = express()
 app.use(cors())
@@ -2321,15 +2322,18 @@ app.get('/api/products', async (req, res) => {
     const cateIds = parseCateIds(req)
     const range = getDateRange(days)
 
-    const data = await kaloPostWithRetry('/product/queryList', () => ({
+    const termo = termoDaBusca(req.query.q)
+    const { path: rota, filtro } = pedidoDaLista('product', termo)
+    const data = cortarNaBusca(await kaloPostWithRetry(rota, () => ({
       country,
       ...range,
       pageNo: page,
-      pageSize,
+      pageSize: tamanhoNaFonte(pageSize, termo),
       cateIds,
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) })
+      ...filtro,
+    }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) }), pageSize, termo)
 
     // Coluna "Vídeos que vendem": os 3 vídeos de maior receita de cada produto,
     // numa chamada de lote (/product/enrich) em vez de uma por produto.
@@ -2677,15 +2681,18 @@ app.get('/api/videos', async (req, res) => {
     const cateIds = parseCateIds(req)
     const range = getDateRange(days)
 
-    const data = await kaloPostWithRetry('/video/queryList', () => ({
+    const termo = termoDaBusca(req.query.q)
+    const { path: rota, filtro } = pedidoDaLista('video', termo)
+    const data = cortarNaBusca(await kaloPostWithRetry(rota, () => ({
       country,
       ...range,
       pageNo: page,
-      pageSize,
+      pageSize: tamanhoNaFonte(pageSize, termo),
       cateIds,
       showCateIds: [],
       sort: [{ field: sortField, type: 'DESC' }],
-    }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) })
+      ...filtro,
+    }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) }), pageSize, termo)
 
     // Coluna Produto: o upstream tem um endpoint de LOTE — POST /video/enrich
     // ({ids,country,startDate,endDate,cateIds}) devolve [{id, product_id}] pra
@@ -2975,14 +2982,18 @@ app.get('/api/shops', async (req, res) => {
     const cateIds = parseCateIds(req)
     const range = getDateRange(days)
 
-    const data = await kaloPostWithRetry('/shop/queryList', () => ({
+    const termo = termoDaBusca(req.query.q)
+    const { path: rota, filtro } = pedidoDaLista('shop', termo)
+    const data = cortarNaBusca(await kaloPostWithRetry(rota, () => ({
       country,
       ...range,
       pageNo: page,
-      pageSize,
+      pageSize: tamanhoNaFonte(pageSize, termo),
       cateIds,
+      ...(termo ? { showCateIds: [] } : {}),
       sort: [{ field: sortField, type: 'DESC' }],
-    }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) })
+      ...filtro,
+    }), country, { targetCount: cateIds.length ? 1 : Math.min(pageSize - 5, 55) }), pageSize, termo)
 
     // Coluna "Produtos mais vendidos" da loja: 3 por linha, em lote.
     if (data && Array.isArray(data.data) && data.data.length > 0) {
@@ -3608,6 +3619,27 @@ app.get('/api/creators', async (req, res) => {
     const sortField = req.query.sortField || 'revenue'
     const cateIds = parseCateIds(req)
     const range = getDateRange(days)
+
+    // Busca: pede a página que veio no parâmetro, ao contrário do ranking abaixo, que
+    // sempre começa da primeira. Medido em 06/11/2026: a página 2 traz 20 criadores novos.
+    const termo = termoDaBusca(req.query.q)
+    if (termo) {
+      const { path: rota, filtro } = pedidoDaLista('creator', termo)
+      const achados = cortarNaBusca(await kaloPostWithRetry(rota, () => ({
+        country,
+        ...range,
+        pageNo: page,
+        pageSize: tamanhoNaFonte(pageSize, termo),
+        cateIds,
+        showCateIds: [],
+        sort: [{ field: sortField, type: 'DESC' }],
+        ...filtro,
+      }), country, { targetCount: 1 }), pageSize, termo)
+      if (achados && Array.isArray(achados.data) && achados.data.length > 0) {
+        await enrichCreatorProducts(achados.data, country, range)
+      }
+      return res.json(achados)
+    }
 
     // O upstream ACEITA a página cheia: /creator/queryList com pageSize=60 devolve
     // os 60 numa única chamada (validado em 2026-07-30 — mesma ordem e mesmos
