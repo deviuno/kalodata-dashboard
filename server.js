@@ -10,7 +10,7 @@ import swaggerUi from 'swagger-ui-express'
 import { headersForCountry, parseCountry, countryLowercase, DEFAULT_COUNTRY, COUNTRY_CONFIG } from './lib/countries.js'
 import { runScraperFn, getQueueStats } from './lib/scraper-queue.js'
 import { newHeaderDumpPath, headerDumpArgs, absorbHeaderDump } from './lib/cookie-jar.js'
-import { corpoDeRecusa, criarCota, origemDoPedido, rotaComCota } from './lib/cota.js'
+import { corpoDeRecusa, criarCota, origemDoPedido, rotaComCota, falhaDaFonte, fonteSemCota } from './lib/cota.js'
 
 const app = express()
 app.use(cors())
@@ -5295,6 +5295,11 @@ const LIVE_CACHE_DETAIL = 6 * 60 * 60 * 1000     // 6 h  â detail / product
 const LIVE_CACHE_LONG   = 24 * 60 * 60 * 1000    // 24 h â chart / categories
 const liveCache = new Map()
 
+function falhaDeLive(res, resp, padrao) {
+  const { status, corpo } = falhaDaFonte(resp, padrao)
+  return res.status(status).json(corpo)
+}
+
 function liveCacheGet(key) {
   const entry = liveCache.get(key)
   if (!entry) return null
@@ -5372,7 +5377,7 @@ app.get('/api/live/:id/detail', (req, res) => {
     // 1. Dados base da live
     const baseResp = kaloPost('/livestream/detail', { id }, country)
     if (!baseResp || !baseResp.success) {
-      return res.status(502).json({ success: false, message: baseResp?.message || 'upstream error on /livestream/detail' })
+      return falhaDeLive(res, baseResp, 'upstream error on /livestream/detail')
     }
     const base = baseResp.data?.base || baseResp.data || {}
 
@@ -5482,6 +5487,7 @@ app.get('/api/live/:id/products', (req, res) => {
     if (!startDate) {
       try {
         const baseResp = kaloPost('/livestream/detail', { id }, country)
+        if (fonteSemCota(baseResp)) return falhaDeLive(res, baseResp, 'upstream error on /livestream/detail')
         const base = baseResp?.data?.base || baseResp?.data || {}
         const s = parseCreateTime(base.create_time)
         const f = parseFinishTime(base.finish_time)
@@ -5497,7 +5503,7 @@ app.get('/api/live/:id/products', (req, res) => {
     if (categoryId) payload.cateValue = [categoryId]
     const listResp = kaloPost('/livestream/detail/product/queryList', payload, country)
     if (!listResp || !listResp.success) {
-      return res.status(502).json({ success: false, message: listResp?.message || 'upstream error on product/queryList' })
+      return falhaDeLive(res, listResp, 'upstream error on product/queryList')
     }
 
     // Contagem total
@@ -5553,7 +5559,7 @@ app.get('/api/live/:id/chart', (req, res) => {
 
     const resp = kaloPost('/livestream/detail/history', { id }, country)
     if (!resp || !resp.success) {
-      return res.status(502).json({ success: false, message: resp?.message || 'upstream error on /livestream/detail/history' })
+      return falhaDeLive(res, resp, 'upstream error on /livestream/detail/history')
     }
 
     const raw = resp.data || []
@@ -5619,7 +5625,7 @@ app.get('/api/live/:id/categories', (req, res) => {
 
     const resp = kaloPost('/livestream/detail/productStrategy', { id }, country)
     if (!resp || !resp.success) {
-      return res.status(502).json({ success: false, message: resp?.message || 'upstream error on /livestream/detail/productStrategy' })
+      return falhaDeLive(res, resp, 'upstream error on /livestream/detail/productStrategy')
     }
 
     const raw = resp.data || []
