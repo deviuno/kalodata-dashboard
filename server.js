@@ -13,6 +13,7 @@ import { newHeaderDumpPath, headerDumpArgs, absorbHeaderDump } from './lib/cooki
 import { corpoDeRecusa, criarCota, origemDoPedido, rotaComCota, falhaDaFonte, fonteSemCota } from './lib/cota.js'
 import { cortarNaBusca, pedidoDaLista, tamanhoNaFonte, termoDaBusca } from './lib/busca.js'
 import { CORPO_DE_FALHA, MENSAGEM_DE_FALHA, SEM_GLOBBING, configComSegredo, responderFalha, resumoDoErro } from './lib/curl-seguro.js'
+import { chaveConfere, chaveDoPedido } from './lib/chave-admin.js'
 
 const app = express()
 app.use(cors())
@@ -285,6 +286,28 @@ function loadConfig() {
 // vazio no config, deixa passar com warning (modo dev). Quando estÃÂ¡ setado,
 // exige header `x-admin-key` exato. Sem isso, qualquer um que descobrir o IP
 // do intermediÃÂ¡rio consegue ler/escrever cookies, config, e disparar alerts.
+// Rotas que gastam a conta Kalodata (/api/kalo, /api/probe-country) ou abrem
+// diagnóstico (/api/debug/*): fecham também quando a admin_key não está
+// configurada. O requireAdminKey abaixo deixa passar nesse caso (modo dev), e
+// esquecer a chave no config.json não pode abrir a conta da empresa para a
+// internet (revisão da auditoria de 14/11/2026, A12). Para usar no painel local,
+// defina ADMIN_KEY no ambiente e mande o header x-admin-key.
+let warnedAdminKeyEstrita = false
+function requireAdminKeyEstrita(req, res, next) {
+  const expected = (loadConfig().admin_key || '').trim()
+  if (!expected) {
+    if (!warnedAdminKeyEstrita) {
+      console.warn('[ADMIN] admin_key vazio: rotas de conta e de diagnostico recusadas ate configurar.')
+      warnedAdminKeyEstrita = true
+    }
+    return res.status(503).json({ success: false, message: 'admin_key_not_configured' })
+  }
+  if (!chaveConfere(expected, chaveDoPedido(req))) {
+    return res.status(401).json({ success: false, message: 'unauthorized' })
+  }
+  return next()
+}
+
 let warnedAdminKeyMissing = false
 function requireAdminKey(req, res, next) {
   const cfg = loadConfig()
@@ -296,8 +319,8 @@ function requireAdminKey(req, res, next) {
     }
     return next()
   }
-  const got = (req.headers['x-admin-key'] || '').trim()
-  if (got !== expected) {
+  // Comparação em tempo constante (lib/chave-admin.js).
+  if (!chaveConfere(expected, chaveDoPedido(req))) {
     return res.status(401).json({ success: false, message: 'NÃÂ£o autorizado (x-admin-key ausente ou incorreto)' })
   }
   return next()
@@ -3856,7 +3879,7 @@ app.get('/api/shop-avatar/:id', (req, res) => {
 
 // Temporary debug: probe CDN paths from server side (admin-only)
 // Rota de diagnóstico: só com a chave de admin (auditoria de 14/11/2026, A12).
-app.get('/api/debug/cdn-probe/:id', requireAdminKey, (req, res) => {
+app.get('/api/debug/cdn-probe/:id', requireAdminKeyEstrita, (req, res) => {
   const { id } = req.params
   const paths = [
     `tiktok.shop/${id}/logo.png`,
@@ -4737,7 +4760,7 @@ app.get('/api/avatar', async (req, res) => {
  */
 // Diagnóstico que gasta a conta Kalodata: só com a chave de admin (auditoria de
 // 14/11/2026, A12). Nenhum chamador do Domma usa esta rota.
-app.get('/api/probe-country', requireAdminKey, (req, res) => {
+app.get('/api/probe-country', requireAdminKeyEstrita, (req, res) => {
   const country = parseCountry(req)
   const t0 = Date.now()
   try {
@@ -5747,7 +5770,7 @@ app.get('/api/live/:id/categories', (req, res) => {
 // vier. Só com a chave de admin (auditoria de 14/11/2026, A12): nenhum serviço do
 // Domma chama esta rota. O único chamador é o painel local (src/lib/kalodata.ts),
 // que roda no `vite` de desenvolvimento e não é servido pela VPS.
-app.use('/api/kalo', requireAdminKey, (req, res) => {
+app.use('/api/kalo', requireAdminKeyEstrita, (req, res) => {
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'POST only' })
   }
