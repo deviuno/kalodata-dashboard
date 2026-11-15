@@ -12,6 +12,8 @@ import { runScraperFn, getQueueStats } from './lib/scraper-queue.js'
 import { newHeaderDumpPath, headerDumpArgs, absorbHeaderDump } from './lib/cookie-jar.js'
 import { corpoDeRecusa, criarCota, origemDoPedido, rotaComCota, falhaDaFonte, fonteSemCota } from './lib/cota.js'
 import { cortarNaBusca, pedidoDaLista, tamanhoNaFonte, termoDaBusca } from './lib/busca.js'
+import { CORPO_DE_FALHA, MENSAGEM_DE_FALHA, SEM_GLOBBING, configComSegredo, responderFalha, resumoDoErro } from './lib/curl-seguro.js'
+import { chaveConfere, chaveDoPedido } from './lib/chave-admin.js'
 
 const app = express()
 app.use(cors())
@@ -106,10 +108,8 @@ function getNextProxy (country) {
   return proxy
 }
 
-/** Monta os args de proxy para curl: ['-x', 'url'] ou []. */
-function proxyCurlArgs (proxy) {
-  return proxy ? ['-x', proxy] : []
-}
+// O proxy (com usuário e senha) não vai mais em `-x` na linha de comando: entra
+// no arquivo de config do curl junto com o cookie (configComSegredo, lib/curl-seguro.js).
 
 /** Jitter aleatório em ms para backoff gentil. */
 function jitter (base = 1000, spread = 1000) {
@@ -286,6 +286,28 @@ function loadConfig() {
 // vazio no config, deixa passar com warning (modo dev). Quando estÃÂ¡ setado,
 // exige header `x-admin-key` exato. Sem isso, qualquer um que descobrir o IP
 // do intermediÃÂ¡rio consegue ler/escrever cookies, config, e disparar alerts.
+// Rotas que gastam a conta Kalodata (/api/kalo, /api/probe-country) ou abrem
+// diagnóstico (/api/debug/*): fecham também quando a admin_key não está
+// configurada. O requireAdminKey abaixo deixa passar nesse caso (modo dev), e
+// esquecer a chave no config.json não pode abrir a conta da empresa para a
+// internet (revisão da auditoria de 14/11/2026, A12). Para usar no painel local,
+// defina ADMIN_KEY no ambiente e mande o header x-admin-key.
+let warnedAdminKeyEstrita = false
+function requireAdminKeyEstrita(req, res, next) {
+  const expected = (loadConfig().admin_key || '').trim()
+  if (!expected) {
+    if (!warnedAdminKeyEstrita) {
+      console.warn('[ADMIN] admin_key vazio: rotas de conta e de diagnostico recusadas ate configurar.')
+      warnedAdminKeyEstrita = true
+    }
+    return res.status(503).json({ success: false, message: 'admin_key_not_configured' })
+  }
+  if (!chaveConfere(expected, chaveDoPedido(req))) {
+    return res.status(401).json({ success: false, message: 'unauthorized' })
+  }
+  return next()
+}
+
 let warnedAdminKeyMissing = false
 function requireAdminKey(req, res, next) {
   const cfg = loadConfig()
@@ -297,8 +319,8 @@ function requireAdminKey(req, res, next) {
     }
     return next()
   }
-  const got = (req.headers['x-admin-key'] || '').trim()
-  if (got !== expected) {
+  // Comparação em tempo constante (lib/chave-admin.js).
+  if (!chaveConfere(expected, chaveDoPedido(req))) {
     return res.status(401).json({ success: false, message: 'NÃÂ£o autorizado (x-admin-key ausente ou incorreto)' })
   }
   return next()
@@ -1342,7 +1364,10 @@ function baixarVideoTo (res, url, { attachment = false, onFim = () => {} } = {})
   // qualquer tropeco na 1a tentativa virava erro final pro usuario.
   const encerra = (code, stderr) => {
     cleanup()
-    return fim(() => res.status(422).json({ success: false, code, message: String(stderr || '').slice(0, 300) }))
+    // O texto do yt-dlp continua indo ao usuário (é o que explica a causa), mas
+    // sem usuário e senha de proxy que apareçam numa URL (auditoria de 14/11/2026).
+    const texto = String(stderr || '').replace(/\/\/[^/\s:@]+:[^/\s@]+@/g, '//***@').slice(0, 300)
+    return fim(() => res.status(422).json({ success: false, code, message: texto }))
   }
   // Erros que nao adianta repetir: o video nao existe, e grande demais ou o
   // binario sumiu. Repetir so faria o usuario esperar 3x pelo mesmo nao.
@@ -1658,11 +1683,13 @@ function saveLastGoodCookies(cookies) {
 function isAuthenticatedCookie(cookies) {
   const value = String(cookies || '').trim()
   if (!value) return false
+  // Cookie pelo arquivo de config, nunca na linha de comando (ver lib/curl-seguro.js).
+  const segredo = configComSegredo({ cookie: value })
   try {
     const out = execFileSync('/usr/local/bin/curl_chrome116', [
       '-s', '--max-time', '20',
       '-A', UA,
-      '-b', value,
+      ...segredo.args,
       '-H', 'accept: application/json',
       '-H', 'country: BR',
       '-H', 'language: pt-BR',
@@ -1672,6 +1699,8 @@ function isAuthenticatedCookie(cookies) {
     return !!(d?.success && d?.data?.token)
   } catch {
     return false
+  } finally {
+    segredo.limpar()
   }
 }
 
@@ -1684,11 +1713,16 @@ function kaloPost(path, body, country = DEFAULT_COUNTRY, proxyUrl = null) {
   const hdrFile = newHeaderDumpPath()
 
   const ctx = headersForCountry(country)
+  // Cookie e proxy (com usuário e senha) vão no arquivo de config, e `-g` desliga o
+  // globbing: o path vem de fora e um `[` derrubava o curl com os args no erro
+  // (auditoria de 14/11/2026, A12; ver lib/curl-seguro.js).
+  const segredo = configComSegredo({ cookie: cookies, proxy: proxyUrl })
 
   const args = [
     '-s', '--max-time', '30',
+    SEM_GLOBBING,
     '-A', UA,
-    '-b', cookies,
+    ...segredo.args,
     '-H', 'content-type: application/json',
     '-H', `country: ${ctx.country}`,
     '-H', `currency: ${ctx.currency}`,
@@ -1705,7 +1739,6 @@ function kaloPost(path, body, country = DEFAULT_COUNTRY, proxyUrl = null) {
     '-X', 'POST',
     `https://www.kalodata.com${path}`,
     '--data-raw', JSON.stringify(body),
-    ...proxyCurlArgs(proxyUrl),
     ...headerDumpArgs(hdrFile),
   ]
 
@@ -1713,6 +1746,7 @@ function kaloPost(path, body, country = DEFAULT_COUNTRY, proxyUrl = null) {
   try {
     result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
   } finally {
+    segredo.limpar()
     // Absorve a renovacao de sessao mesmo quando a chamada falha.
     absorbHeaderDump(hdrFile)
   }
@@ -1730,11 +1764,14 @@ function kaloGet(path, country = DEFAULT_COUNTRY) {
   const hdrFile = newHeaderDumpPath()
 
   const ctx = headersForCountry(country)
+  // Mesmo cuidado do kaloPost: cookie no arquivo de config e `-g`.
+  const segredo = configComSegredo({ cookie: cookies })
 
   const args = [
     '-s', '--max-time', '30',
+    SEM_GLOBBING,
     '-A', UA,
-    '-b', cookies,
+    ...segredo.args,
     '-H', 'accept: application/json, text/plain, */*',
     '-H', `country: ${ctx.country}`,
     '-H', `currency: ${ctx.currency}`,
@@ -1756,6 +1793,7 @@ function kaloGet(path, country = DEFAULT_COUNTRY) {
   try {
     result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
   } finally {
+    segredo.limpar()
     absorbHeaderDump(hdrFile)
   }
   if (result.trimStart().startsWith('<')) {
@@ -1803,11 +1841,14 @@ async function kaloPostAsync (path, body, country = DEFAULT_COUNTRY, proxyUrl = 
 
   const proxy = (proxyUrl !== undefined) ? proxyUrl : getNextProxy(country)
   const ctx = headersForCountry(country)
+  // Cookie e proxy no arquivo de config, e `-g` (ver kaloPost).
+  const segredo = configComSegredo({ cookie: cookies, proxy })
 
   const args = [
     '-s', '--max-time', String(_CURL_MAX_TIME),
+    SEM_GLOBBING,
     '-A', UA,
-    '-b', cookies,
+    ...segredo.args,
     '-H', 'content-type: application/json',
     '-H', `country: ${ctx.country}`,
     '-H', `currency: ${ctx.currency}`,
@@ -1824,7 +1865,6 @@ async function kaloPostAsync (path, body, country = DEFAULT_COUNTRY, proxyUrl = 
     '-X', 'POST',
     `https://www.kalodata.com${path}`,
     '--data-raw', JSON.stringify(body),
-    ...proxyCurlArgs(proxy),
     ...headerDumpArgs(hdrFile),
   ]
 
@@ -1833,6 +1873,7 @@ async function kaloPostAsync (path, body, country = DEFAULT_COUNTRY, proxyUrl = 
   try {
     result = await runScraperFn(key, () => _execCurl(args))
   } finally {
+    segredo.limpar()
     absorbHeaderDump(hdrFile)
   }
   if (proxy) console.log('[proxy] kaloPostAsync', path, 'via', proxy.replace(/:[^:@]*@/, ':***@'))
@@ -1846,11 +1887,14 @@ async function kaloGetAsync (path, country = DEFAULT_COUNTRY) {
 
   const proxy = getNextProxy(country)
   const ctx = headersForCountry(country)
+  // Cookie e proxy no arquivo de config, e `-g` (ver kaloPost).
+  const segredo = configComSegredo({ cookie: cookies, proxy })
 
   const args = [
     '-s', '--max-time', String(_CURL_MAX_TIME),
+    SEM_GLOBBING,
     '-A', UA,
-    '-b', cookies,
+    ...segredo.args,
     '-H', 'accept: application/json, text/plain, */*',
     '-H', `country: ${ctx.country}`,
     '-H', `currency: ${ctx.currency}`,
@@ -1865,7 +1909,6 @@ async function kaloGetAsync (path, country = DEFAULT_COUNTRY) {
     '-H', 'sec-fetch-site: same-origin',
     '-H', 'dnt: 1',
     `https://www.kalodata.com${path}`,
-    ...proxyCurlArgs(proxy),
     ...headerDumpArgs(hdrFile),
   ]
 
@@ -1874,6 +1917,7 @@ async function kaloGetAsync (path, country = DEFAULT_COUNTRY) {
   try {
     result = await runScraperFn(key, () => _execCurl(args))
   } finally {
+    segredo.limpar()
     absorbHeaderDump(hdrFile)
   }
   return _parseCurlResult(result)
@@ -1901,28 +1945,42 @@ function getKalowaveToken() {
   if (cookies) {
     try {
       // Step 1: Get SSO token from Kalodata
+      // Cookies sempre pelo arquivo de config (ver lib/curl-seguro.js).
+      const ssoSegredo = configComSegredo({ cookie: cookies })
       const ssoArgs = [
         '-s', '--max-time', '15', '-A', UA,
-        '-b', cookies,
+        ...ssoSegredo.args,
         '-H', 'accept: application/json',
         '-H', 'country: BR', '-H', 'language: pt-BR',
         'https://www.kalodata.com/api/sso/clip-token',
       ]
-      const ssoResult = JSON.parse(execFileSync('/usr/local/bin/curl_chrome116', ssoArgs, { encoding: 'utf-8', timeout: 20000 }))
+      let ssoResult
+      try {
+        ssoResult = JSON.parse(execFileSync('/usr/local/bin/curl_chrome116', ssoArgs, { encoding: 'utf-8', timeout: 20000 }))
+      } finally {
+        ssoSegredo.limpar()
+      }
 
       if (ssoResult.success && ssoResult.data?.token) {
         // Step 2: Exchange SSO token for Kalowave access token
+        // O cookie da Kalowave também vai no arquivo de config (ver lib/curl-seguro.js).
+        const oauthSegredo = configComSegredo({ cookie: cfg.kalowave_cookies })
         const oauthArgs = [
           '-s', '--max-time', '15', '-A', UA,
           '-X', 'POST',
           '-H', 'content-type: application/json',
           '-H', 'accept: application/json',
+          ...oauthSegredo.args,
         ]
-        if (cfg.kalowave_cookies) oauthArgs.push('-b', cfg.kalowave_cookies)
         oauthArgs.push('-d', JSON.stringify({ token: ssoResult.data.token }))
         oauthArgs.push('https://clip.kalowave.com/api/oauth2/kalo')
 
-        const oauthResult = JSON.parse(execFileSync('/usr/local/bin/curl_chrome116', oauthArgs, { encoding: 'utf-8', timeout: 20000 }))
+        let oauthResult
+        try {
+          oauthResult = JSON.parse(execFileSync('/usr/local/bin/curl_chrome116', oauthArgs, { encoding: 'utf-8', timeout: 20000 }))
+        } finally {
+          oauthSegredo.limpar()
+        }
 
         if (oauthResult.success && oauthResult.data?.accessToken) {
           kalowaveCache = {
@@ -1947,25 +2005,30 @@ function getKalowaveToken() {
 function kalowaveGet(path) {
   const token = getKalowaveToken()
   const cfg = loadConfig()
+  // Token e cookies da Kalowave no arquivo de config, e `-g`: o path leva o id do
+  // vídeo, que vem da URL do pedido (ver lib/curl-seguro.js).
+  const segredo = configComSegredo({ cookie: cfg.kalowave_cookies, headers: [`authorization: Bearer ${token}`] })
 
   const args = [
     '-s', '--max-time', '30',
+    SEM_GLOBBING,
     '-A', UA,
     '-H', 'accept: application/json',
-    '-H', `authorization: Bearer ${token}`,
+    ...segredo.args,
     '-H', 'country: US',
     '-H', 'currency: USD',
     '-H', 'language: pt-BR',
     '-H', 'dnt: 1',
   ]
 
-  if (cfg.kalowave_cookies) {
-    args.push('-b', cfg.kalowave_cookies)
-  }
-
   args.push(`https://clip.kalowave.com${path}`)
 
-  const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  let result
+  try {
+    result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  } finally {
+    segredo.limpar()
+  }
   if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
 }
@@ -1973,27 +2036,31 @@ function kalowaveGet(path) {
 function kalowavePost(path, body) {
   const token = getKalowaveToken()
   const cfg = loadConfig()
+  // Mesmo cuidado do kalowaveGet.
+  const segredo = configComSegredo({ cookie: cfg.kalowave_cookies, headers: [`authorization: Bearer ${token}`] })
 
   const args = [
     '-s', '--max-time', '30',
+    SEM_GLOBBING,
     '-A', UA,
     '-X', 'POST',
     '-H', 'accept: application/json',
     '-H', 'content-type: application/json',
-    '-H', `authorization: Bearer ${token}`,
+    ...segredo.args,
     '-H', 'country: US',
     '-H', 'currency: USD',
     '-H', 'language: pt-BR',
   ]
 
-  if (cfg.kalowave_cookies) {
-    args.push('-b', cfg.kalowave_cookies)
-  }
-
   args.push('-d', JSON.stringify(body))
   args.push(`https://clip.kalowave.com${path}`)
 
-  const result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  let result
+  try {
+    result = execFileSync('/usr/local/bin/curl_chrome116', args, { encoding: 'utf-8', timeout: 35000 })
+  } finally {
+    segredo.limpar()
+  }
   if (!result.trim()) return { success: false, data: null, message: 'upstream returned empty body' }
   return JSON.parse(result)
 }
@@ -2294,7 +2361,8 @@ app.get('/api/categories', (req, res) => {
     cateTreeCache.set(country, { body, status, expiresAt: Date.now() + (ok ? 7 * 86400000 : 3600000) })
     return res.status(status).json(body)
   } catch (e) {
-    const body = { success: false, message: e.message }
+    console.error(`[categories] ${resumoDoErro(e)}`)
+    const body = CORPO_DE_FALHA
     cateTreeCache.set(country, { body, status: 500, expiresAt: Date.now() + 3600000 })
     return res.status(500).json(body)
   }
@@ -2343,7 +2411,7 @@ app.get('/api/products', async (req, res) => {
 
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -2388,7 +2456,8 @@ function fetchKaloImage(cdnPath) {
   return new Promise((resolve, reject) => {
     execFile(
       '/usr/local/bin/curl_chrome116',
-      ['-s', '--max-time', '15', '-L', `https://img.kalocdn.com/${cdnPath}`],
+      // `-g`: o caminho leva o id que veio na URL do pedido (ver lib/curl-seguro.js).
+      ['-s', '--max-time', '15', '-L', SEM_GLOBBING, `https://img.kalocdn.com/${cdnPath}`],
       { timeout: 20000, encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 },
       (err, stdout) => (err ? reject(err) : resolve(stdout)),
     )
@@ -2512,7 +2581,7 @@ app.get('/api/video/:id/url', (req, res) => {
     const data = kaloGet(`/video/detail/getVideoUrl?videoId=${id}`, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -2549,7 +2618,7 @@ app.get('/api/video/:id/total', (req, res) => {
     const data = kaloPost('/video/detail/total', { id, country, ...range, days }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -2588,7 +2657,7 @@ app.get('/api/video/:id/products', async (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -2627,7 +2696,7 @@ app.get('/api/video/:id/similar', async (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -2708,7 +2777,7 @@ app.get('/api/videos', async (req, res) => {
   } catch (e) {
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -2748,7 +2817,7 @@ app.get('/api/videos/hot', (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -2810,7 +2879,7 @@ app.get('/api/lives', async (req, res) => {
 
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -2863,7 +2932,7 @@ app.get('/api/creator/:id/lives', async (req, res) => {
   } catch (e) {
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -2941,7 +3010,7 @@ app.get('/api/creator/:id/videos', async (req, res) => {
     if (e.janela_invalida)  return res.status(400).json({ success: false, error: 'janela_invalida', message: e.message })
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3002,7 +3071,7 @@ app.get('/api/shops', async (req, res) => {
 
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3077,7 +3146,7 @@ app.get('/api/shop/:id/total', (req, res) => {
     const data = kaloPost('/shop/detail/total', shopOverviewBody(id, country, range), country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3097,7 +3166,7 @@ app.get('/api/shop/:id/info', (req, res) => {
     const data = kaloPost('/shop/detail', shopOverviewBody(id, country, range), country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3126,7 +3195,7 @@ app.get('/api/shop/:id/creators', (req, res) => {
     }), country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3155,7 +3224,7 @@ app.get('/api/shop/:id/products', (req, res) => {
     }), country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3185,7 +3254,7 @@ app.get('/api/shop/:id/videos', (req, res) => {
     }), country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3214,7 +3283,7 @@ app.get('/api/shop/:id/lives', (req, res) => {
     }), country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3241,7 +3310,7 @@ app.get('/api/shop/:id/new-products', (req, res) => {
     }), country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3261,7 +3330,7 @@ app.get('/api/shop/:id/history', (req, res) => {
     const data = kaloPost('/shop/detail/history', shopOverviewBody(id, country, range), country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3296,7 +3365,7 @@ app.get('/api/product/:id/detail', (req, res) => {
     const data = kaloPost('/product/detail', { country, id, ...range }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3324,7 +3393,7 @@ app.get('/api/product/:id/images', (req, res) => {
     const data = kaloGet(`/product/detail/getImages?productId=${encodeURIComponent(id)}`, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3356,7 +3425,7 @@ app.get('/api/product/:id/history', (req, res) => {
     const data = kaloPost('/product/detail/history', { country, id, ...range }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3383,7 +3452,7 @@ app.get('/api/product/:id/analysis', (req, res) => {
     const data = kaloPost('/product/analysis', { country, id }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3414,7 +3483,7 @@ app.get('/api/product/:id/total', (req, res) => {
     const data = kaloPost('/product/detail/total', { country, id, ...range }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3465,7 +3534,7 @@ app.get('/api/product/:id/videos', (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3516,7 +3585,7 @@ app.get('/api/product/:id/creators', (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3566,7 +3635,7 @@ app.get('/api/product/:id/lives', (req, res) => {
     }, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3676,7 +3745,7 @@ app.get('/api/creators', async (req, res) => {
 
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3742,7 +3811,7 @@ app.get('/api/creators/with-contact', requireAdminKey, async (req, res) => {
     const items = Array.isArray(data_) ? data_ : Array.isArray(data_ && data_.list) ? data_.list : Array.isArray(data && data.list) ? data.list : []
     res.json({ success: true, data: items, limite: false })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3809,7 +3878,8 @@ app.get('/api/shop-avatar/:id', (req, res) => {
 })
 
 // Temporary debug: probe CDN paths from server side (admin-only)
-app.get('/api/debug/cdn-probe/:id', (req, res) => {
+// Rota de diagnóstico: só com a chave de admin (auditoria de 14/11/2026, A12).
+app.get('/api/debug/cdn-probe/:id', requireAdminKeyEstrita, (req, res) => {
   const { id } = req.params
   const paths = [
     `tiktok.shop/${id}/logo.png`,
@@ -3823,12 +3893,13 @@ app.get('/api/debug/cdn-probe/:id', (req, res) => {
   for (const path of paths) {
     try {
       const buf = execFileSync('/usr/local/bin/curl_chrome116', [
-        '-s', '--max-time', '8', '-L',
+        '-s', '--max-time', '8', '-L', SEM_GLOBBING,
         `https://img.kalocdn.com/${path}`,
       ], { timeout: 12000 })
       results[path] = buf.length
     } catch (e) {
-      results[path] = 'error: ' + e.message.substring(0, 50)
+      console.warn(`[cdn-probe] ${path}: ${resumoDoErro(e)}`)
+      results[path] = 'error'
     }
   }
   res.json(results)
@@ -3894,7 +3965,7 @@ app.get('/api/search/creators', (req, res) => {
     const creators = data?.data?.creator || []
     res.json({ success: true, data: creators })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3940,7 +4011,7 @@ app.get('/api/search/products', (req, res) => {
     const products = data?.data?.product || []
     res.json({ success: true, data: products })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -3986,7 +4057,7 @@ app.get('/api/search/videos', (req, res) => {
     const videos = data?.data?.video || []
     res.json({ success: true, data: videos })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -4075,7 +4146,7 @@ app.get('/api/creator/:id/shops', async (req, res) => {
   } catch (e) {
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -4102,7 +4173,7 @@ app.get('/api/creator/:id/products', async (req, res) => {
     if (e.janela_invalida)  return res.status(400).json({ success: false, error: 'janela_invalida', message: e.message })
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -4181,7 +4252,7 @@ app.get('/api/creator/:id/total', async (req, res) => {
     if (e.janela_invalida)  return res.status(400).json({ success: false, error: 'janela_invalida', message: e.message })
     if (e.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
     if (e.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -4226,7 +4297,7 @@ app.get('/api/creator/:id/detail', (req, res) => {
     if (data && data.success) insightCacheSet(cacheKey, data, 86400000)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -4414,7 +4485,7 @@ app.post('/api/alerts/test', requireAdminKey, async (_req, res) => {
     const sent = await sendCookieExpiredAlert()
     res.json({ success: true, sent, message: sent ? 'Email enviado' : 'Email nao enviado (nao configurado ou enviado recentemente)' })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -4446,7 +4517,7 @@ app.post('/api/alerts/check', async (_req, res) => {
     }
     res.json({ sessionValid: valid, alertSent, checkedAt: new Date().toISOString() })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -4687,7 +4758,9 @@ app.get('/api/avatar', async (req, res) => {
  *     responses:
  *       200: { description: Resultado do probe (sucesso, sample size, erro se houver) }
  */
-app.get('/api/probe-country', (req, res) => {
+// Diagnóstico que gasta a conta Kalodata: só com a chave de admin (auditoria de
+// 14/11/2026, A12). Nenhum chamador do Domma usa esta rota.
+app.get('/api/probe-country', requireAdminKeyEstrita, (req, res) => {
   const country = parseCountry(req)
   const t0 = Date.now()
   try {
@@ -4714,10 +4787,11 @@ app.get('/api/probe-country', (req, res) => {
       raw: data?.success ? undefined : data,
     })
   } catch (e) {
+    console.error(`[probe-country] ${resumoDoErro(e)}`)
     res.status(500).json({
       country,
       ok: false,
-      error: e.message,
+      error: MENSAGEM_DE_FALHA,
       durationMs: Date.now() - t0,
     })
   }
@@ -4951,7 +5025,7 @@ app.get('/api/insight/:videoId/url', (req, res) => {
     if (data && data.success !== false) insightCacheSet(key, data, INSIGHT_URL_TTL)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -4978,7 +5052,7 @@ app.post('/api/insight/:videoId/export', (req, res) => {
     const data = kalowaveGet(`/api/video/download-url?id=${req.params.videoId}&videoSource=Kalodata`)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -5039,7 +5113,7 @@ app.get('/api/insight/:videoId/transcript', (req, res) => {
     if (data && data.success !== false) insightCacheSet(key, data, INSIGHT_TRANSCRIPT_TTL)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -5071,7 +5145,7 @@ app.post('/api/insight/:videoId/transcript', (req, res) => {
     })
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -5188,7 +5262,7 @@ app.get('/api/creator/:handle/avatar', (req, res) => {
 
     res.json({ success: false, message: 'Profile data not found' })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -5304,7 +5378,7 @@ app.get('/api/creator/search/:handle', (req, res) => {
 
     res.json({ success: false, message: 'Creator not found on TikTok' })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -5462,7 +5536,7 @@ app.get('/api/live/:id/detail', (req, res) => {
 
     res.json({ success: true, data, cached: false })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -5561,7 +5635,7 @@ app.get('/api/live/:id/products', (req, res) => {
 
     res.json({ success: true, data: items, total, page, pageSize, cached: false })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -5627,7 +5701,7 @@ app.get('/api/live/:id/chart', (req, res) => {
 
     res.json({ success: true, data, cached: false })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -5685,14 +5759,18 @@ app.get('/api/live/:id/categories', (req, res) => {
     liveCacheSet(cacheKey, data, LIVE_CACHE_LONG)
     res.json({ success: true, data, cached: false })
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
 // ---------------------------------------------------------------------------
 // Legacy proxy (mantido para compatibilidade com o frontend)
 // ---------------------------------------------------------------------------
-app.use('/api/kalo', (req, res) => {
+// Repassa QUALQUER chamada à API da Kalodata com a conta da empresa e o corpo que
+// vier. Só com a chave de admin (auditoria de 14/11/2026, A12): nenhum serviço do
+// Domma chama esta rota. O único chamador é o painel local (src/lib/kalodata.ts),
+// que roda no `vite` de desenvolvimento e não é servido pela VPS.
+app.use('/api/kalo', requireAdminKeyEstrita, (req, res) => {
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, message: 'POST only' })
   }
@@ -5702,7 +5780,7 @@ app.use('/api/kalo', (req, res) => {
     const data = kaloPost(kaloPath, req.body || {}, country)
     res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message })
+    responderFalha(res, e)
   }
 })
 
@@ -5917,8 +5995,7 @@ app.post('/api/videos/engagement', async (req, res) => {
     if (pending > 0) console.warn(`[engagement] ${pending} de ${missing.length} ficaram para a proxima chamada`)
     res.json({ success: true, data, pending })
   } catch (e) {
-    console.error('[engagement]', e && e.message)
-    res.status(500).json({ success: false, message: e && e.message ? e.message : 'internal error' })
+    responderFalha(res, e)
   }
 })
 
@@ -5929,8 +6006,9 @@ app.post('/api/videos/engagement', async (req, res) => {
 app.use((err, _req, res, _next) => {
   if (err && err.scraper_busy)    return res.status(503).json({ success: false, error: 'scraper_busy',    retriable: true })
   if (err && err.scraper_timeout) return res.status(503).json({ success: false, error: 'scraper_timeout', retriable: true })
-  console.error('[unhandled]', err && err.message ? err.message : err)
-  res.status(500).json({ success: false, message: err && err.message ? err.message : 'internal error' })
+  console.error('[unhandled]', resumoDoErro(err))
+  // Nunca o err.message: ele pode trazer a linha de comando do curl.
+  res.status(500).json(CORPO_DE_FALHA)
 })
 
 // ---------------------------------------------------------------------------
